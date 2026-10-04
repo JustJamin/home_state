@@ -80,4 +80,4 @@ home_state/
 - [x] lenovo sees the adverts (bluetoothctl / btmon)
 - [x] Scanner script on the host
 - [x] Docker Compose: scanner + Postgres
-- [ ] k3s deployment
+- [x] k3s deployment

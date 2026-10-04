@@ -1,0 +1,27 @@
+# Postgres only accepts connections from the scanner; nothing may connect to the scanner.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: postgres-from-scanner
+spec:
+  podSelector:
+    matchLabels:
+      app: postgres
+  policyTypes: ["Ingress"]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: scanner
+      ports:
+        - port: 5432
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: scanner-no-ingress
+spec:
+  podSelector:
+    matchLabels:
+      app: scanner
+  policyTypes: ["Ingress"]
