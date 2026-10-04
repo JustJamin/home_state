@@ -1,6 +1,6 @@
 # firmware
 
-ESP-IDF + NimBLE transmitter for the XIAO ESP32-C6. It broadcasts the v1 payload (see the top-level README) in non-connectable legacy adverts, about once a second, and refreshes the payload every 5 s.
+ESP-IDF + NimBLE transmitter for the XIAO ESP32-C6. It reads the chip's internal temperature sensor and broadcasts the v1 payload (see the top-level README) in non-connectable legacy adverts, about once a second, and refreshes the payload every 5 s.
 
 Needs ESP-IDF in `~/esp/esp-idf` (tracked in `~/repo/sysadmin/TODO.md`).
 
