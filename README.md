@@ -70,6 +70,7 @@ home_state/
   firmware/     <- XIAO ESP32-C6 transmitter code
   scanner/      <- Python BLE scanner + Dockerfile
   deploy/       <- compose.yaml, k8s/ manifests
+  dashboards/   <- alternative dashboards (Streamlit, Dash, NiceGUI, FastAPI+SSE)
   docs/         <- payload format, notes
 ```
 
@@ -82,6 +83,7 @@ home_state/
 - [x] Docker Compose: scanner + Postgres
 - [x] k3s deployment
 - [x] Grafana dashboard (k3s, tailnet-only: http://100.79.164.117:30300)
+- [x] Demo dashboards: Streamlit, Dash, NiceGUI, FastAPI+SSE on ports 30301–30304 (see `dashboards/README.md`)
 - [ ] Real sensors
 - [ ] Database backups
 

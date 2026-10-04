@@ -1,0 +1,284 @@
+# Demo dashboards (dashboards/*), one Deployment + NodePort Service each.
+# Needs the "dashboards" Secret (key: db-password); see deploy/README.md.
+# NodePorts are tailnet-only (k3s binds them to 127.0.0.1 + lenovo's Tailscale IP).
+# Images: deploy/push-dashboards.sh
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: dash-streamlit
+spec:
+  type: NodePort
+  selector:
+    app: dash-streamlit
+  ports:
+    - name: http
+      port: 8501
+      targetPort: http
+      nodePort: 30301
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dash-streamlit
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: dash-streamlit
+  template:
+    metadata:
+      labels:
+        app: dash-streamlit
+        role: dashboard
+    spec:
+      securityContext:
+        runAsUser: 65534
+        runAsGroup: 65534
+        runAsNonRoot: true
+      containers:
+        - name: app
+          image: localhost:5000/home_state-dash-streamlit:latest
+          imagePullPolicy: Always
+          env:
+            - name: DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: dashboards
+                  key: db-password
+            - name: DATABASE_URL
+              value: postgresql://dashboards:$(DB_PASSWORD)@db:5432/home_state
+          ports:
+            - name: http
+              containerPort: 8501
+          readinessProbe:
+            tcpSocket:
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 5
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              memory: 96Mi
+            limits:
+              memory: 384Mi
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: dash-dash
+spec:
+  type: NodePort
+  selector:
+    app: dash-dash
+  ports:
+    - name: http
+      port: 8050
+      targetPort: http
+      nodePort: 30302
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dash-dash
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: dash-dash
+  template:
+    metadata:
+      labels:
+        app: dash-dash
+        role: dashboard
+    spec:
+      securityContext:
+        runAsUser: 65534
+        runAsGroup: 65534
+        runAsNonRoot: true
+      containers:
+        - name: app
+          image: localhost:5000/home_state-dash-dash:latest
+          imagePullPolicy: Always
+          env:
+            - name: DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: dashboards
+                  key: db-password
+            - name: DATABASE_URL
+              value: postgresql://dashboards:$(DB_PASSWORD)@db:5432/home_state
+          ports:
+            - name: http
+              containerPort: 8050
+          readinessProbe:
+            tcpSocket:
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 5
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              memory: 96Mi
+            limits:
+              memory: 384Mi
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: dash-nicegui
+spec:
+  type: NodePort
+  selector:
+    app: dash-nicegui
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+      nodePort: 30303
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dash-nicegui
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: dash-nicegui
+  template:
+    metadata:
+      labels:
+        app: dash-nicegui
+        role: dashboard
+    spec:
+      securityContext:
+        runAsUser: 65534
+        runAsGroup: 65534
+        runAsNonRoot: true
+      containers:
+        - name: app
+          image: localhost:5000/home_state-dash-nicegui:latest
+          imagePullPolicy: Always
+          env:
+            - name: DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: dashboards
+                  key: db-password
+            - name: DATABASE_URL
+              value: postgresql://dashboards:$(DB_PASSWORD)@db:5432/home_state
+          ports:
+            - name: http
+              containerPort: 8080
+          readinessProbe:
+            tcpSocket:
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 5
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              memory: 96Mi
+            limits:
+              memory: 384Mi
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: dash-fastapi-sse
+spec:
+  type: NodePort
+  selector:
+    app: dash-fastapi-sse
+  ports:
+    - name: http
+      port: 8000
+      targetPort: http
+      nodePort: 30304
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dash-fastapi-sse
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: dash-fastapi-sse
+  template:
+    metadata:
+      labels:
+        app: dash-fastapi-sse
+        role: dashboard
+    spec:
+      securityContext:
+        runAsUser: 65534
+        runAsGroup: 65534
+        runAsNonRoot: true
+      containers:
+        - name: app
+          image: localhost:5000/home_state-dash-fastapi-sse:latest
+          imagePullPolicy: Always
+          env:
+            - name: DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: dashboards
+                  key: db-password
+            - name: DATABASE_URL
+              value: postgresql://dashboards:$(DB_PASSWORD)@db:5432/home_state
+          ports:
+            - name: http
+              containerPort: 8000
+          readinessProbe:
+            tcpSocket:
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 5
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              memory: 96Mi
+            limits:
+              memory: 192Mi
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}

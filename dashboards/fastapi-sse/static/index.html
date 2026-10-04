@@ -1,0 +1,141 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>home_state · SSE</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/uplot@1.6.32/dist/uPlot.min.css">
+<script src="https://cdn.jsdelivr.net/npm/uplot@1.6.32/dist/uPlot.iife.min.js"></script>
+<style>
+  :root { --bg: #f7f7f9; --card: #fff; --fg: #1d1d22; --muted: #6b6b76; --line: #e3e3e8;
+          --ok: #1a7f37; --bad: #cf222e; --accent: #3b6fe0; --flash: #fff4c2; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #15161a; --card: #1e2026; --fg: #e8e8ec; --muted: #9a9aa6; --line: #2e3038;
+            --ok: #3fb950; --bad: #f85149; --accent: #7aa2ff; --flash: #4a3f12; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 15px/1.4 system-ui, sans-serif; background: var(--bg); color: var(--fg); }
+  main { max-width: 1200px; margin: 0 auto; padding: 16px; }
+  header { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+  h1 { margin: 0; font-size: 1.5rem; }
+  .muted { color: var(--muted); font-size: .9rem; }
+  .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--bad); display: inline-block; }
+  .dot.on { background: var(--ok); box-shadow: 0 0 0 0 var(--ok); animation: pulse 2s infinite; }
+  @keyframes pulse { 0% { box-shadow: 0 0 0 0 rgba(63,185,80,.6); } 70% { box-shadow: 0 0 0 8px rgba(63,185,80,0); } 100% { box-shadow: 0 0 0 0 rgba(63,185,80,0); } }
+  .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 12px; margin: 16px 0; }
+  .tile, .panel { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 12px 16px; }
+  .tile .v { font-size: 1.6rem; font-weight: 600; font-variant-numeric: tabular-nums; }
+  .panel { margin-bottom: 12px; overflow-x: auto; }
+  table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+  th, td { text-align: left; padding: 4px 8px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+  tr.new { animation: flash 2s ease-out; }
+  @keyframes flash { from { background: var(--flash); } to { background: transparent; } }
+  .u-legend { color: var(--fg); }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>🌡️ home_state</h1>
+    <span class="dot" id="dot"></span><span id="conn" class="muted">connecting…</span>
+    <span class="muted">· FastAPI + Server-Sent Events + uPlot. No framework, about 150 lines of JS.</span>
+  </header>
+
+  <section class="tiles">
+    <div class="tile"><div class="muted">Latest temperature</div><div class="v" id="t-temp">–</div></div>
+    <div class="tile"><div class="muted">Signal</div><div class="v" id="t-rssi">–</div></div>
+    <div class="tile"><div class="muted">Last seen</div><div class="v" id="t-age">–</div></div>
+    <div class="tile"><div class="muted">Pushed since page load</div><div class="v" id="t-pushed">0</div></div>
+  </section>
+
+  <div class="panel"><div id="temp-chart"></div></div>
+  <div class="panel"><div id="rssi-chart"></div></div>
+
+  <div class="panel">
+    <table>
+      <thead><tr><th>received</th><th>board</th><th>counter</th><th>temp °C</th><th>RSSI dBm</th><th>uptime s</th></tr></thead>
+      <tbody id="rows"></tbody>
+    </table>
+  </div>
+</main>
+
+<script>
+const MAX_POINTS = 3000, MAX_ROWS = 50;
+const $ = id => document.getElementById(id);
+const css = v => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
+
+// columnar data for uPlot: [timestamps(s), values]
+const temp = [[], []], rssi = [[], []];
+let pushed = 0, lastSeen = null;
+
+function makeChart(el, title, unit, data, opts = {}) {
+  return new uPlot({
+    title, width: el.clientWidth, height: 260,
+    scales: { x: { time: true } },
+    axes: [{ stroke: css("--muted"), grid: { stroke: css("--line") } },
+           { stroke: css("--muted"), grid: { stroke: css("--line") }, label: unit }],
+    series: [{}, { label: title, stroke: css("--accent"), width: 2, ...opts }],
+    cursor: { drag: { x: true, y: false } },   // drag to zoom, double-click to reset
+  }, data, el);
+}
+const tempChart = makeChart($("temp-chart"), "Chip temperature", "°C", temp,
+                            { paths: uPlot.paths.stepped({ align: 1 }) });
+const rssiChart = makeChart($("rssi-chart"), "Signal strength", "dBm", rssi,
+                            { paths: () => null, points: { show: true, size: 4 } });
+new ResizeObserver(() => {
+  tempChart.setSize({ width: $("temp-chart").clientWidth, height: 260 });
+  rssiChart.setSize({ width: $("rssi-chart").clientWidth, height: 260 });
+}).observe($("temp-chart"));
+
+function add(r, isLive) {
+  const t = Date.parse(r.received_at) / 1000;
+  temp[0].push(t); temp[1].push(r.temp_c);
+  rssi[0].push(t); rssi[1].push(r.rssi);
+  for (const d of [temp, rssi]) if (d[0].length > MAX_POINTS) { d[0].shift(); d[1].shift(); }
+
+  const tr = document.createElement("tr");
+  if (isLive) tr.className = "new";
+  tr.innerHTML = `<td>${new Date(r.received_at).toLocaleTimeString()}</td><td>${r.board}</td>` +
+                 `<td>${r.counter}</td><td>${r.temp_c ?? "–"}</td><td>${r.rssi}</td><td>${r.uptime_s}</td>`;
+  $("rows").prepend(tr);
+  while ($("rows").children.length > MAX_ROWS) $("rows").lastChild.remove();
+
+  $("t-temp").textContent = r.temp_c == null ? "–" : `${r.temp_c.toFixed(1)} °C`;
+  $("t-rssi").textContent = `${r.rssi} dBm`;
+  lastSeen = Date.parse(r.received_at);
+}
+
+// setData(data, resetScales): don't reset the x range while the user is zoomed in
+function redraw() {
+  tempChart.setData(temp, !tempChart.zoomed);
+  rssiChart.setData(rssi, !rssiChart.zoomed);
+}
+for (const [c, d] of [[tempChart, temp], [rssiChart, rssi]]) {
+  c.over.addEventListener("mousedown", () => c.zoomed = true);
+  c.over.addEventListener("dblclick", () => { c.zoomed = false; c.setData(d); });
+}
+
+setInterval(() => {
+  if (lastSeen) $("t-age").textContent = `${Math.round((Date.now() - lastSeen) / 1000)} s ago`;
+}, 1000);
+
+async function start() {
+  const history = await (await fetch("api/readings?minutes=60")).json();
+  history.forEach(r => add(r, false));
+  redraw();
+
+  // One long-lived HTTP response; the browser reconnects automatically and
+  // sends Last-Event-ID so the server can replay anything missed.
+  const es = new EventSource("api/stream");
+  es.onopen = () => { $("dot").className = "dot on"; $("conn").textContent = "live (SSE connected)"; };
+  es.onerror = () => { $("dot").className = "dot"; $("conn").textContent = "reconnecting…"; };
+  es.addEventListener("reading", e => {
+    add(JSON.parse(e.data), true);
+    $("t-pushed").textContent = ++pushed;
+    redraw();
+  });
+}
+start();
+</script>
+</body>
+</html>

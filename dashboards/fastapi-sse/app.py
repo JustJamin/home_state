@@ -1,0 +1,129 @@
+"""home_state with FastAPI + plain HTML/JS: a JSON API, a Server-Sent Events stream, and a static page.
+
+Shows: no frontend framework at all. The browser loads history from
+/api/readings, then holds one EventSource on /api/stream; the server pushes
+each new row the moment it sees it (polling Postgres once a second, so N
+browsers cost one query per second, not N). EventSource reconnects by itself
+and resumes from Last-Event-ID, so no rows are missed across reconnects.
+"""
+
+import asyncio
+import json
+import os
+from contextlib import asynccontextmanager
+from datetime import datetime, timezone
+from pathlib import Path
+
+from fastapi import FastAPI, Header, Query, Request
+from fastapi.responses import FileResponse, StreamingResponse
+from psycopg.rows import dict_row
+from psycopg_pool import AsyncConnectionPool
+
+DUMMY_DATA_BEFORE = datetime(2026, 10, 4, 20, 30, 52, tzinfo=timezone.utc)
+COLUMNS = """id, received_at, 'hs-' || lpad(board_id::text, 2, '0') AS board,
+             counter, temp_c, rssi, uptime_s"""
+STATIC = Path(__file__).parent / "static"
+
+pool = AsyncConnectionPool(os.environ["DATABASE_URL"], min_size=1, max_size=4, open=False,
+                           kwargs={"row_factory": dict_row})
+
+
+class Broadcaster:
+    """One DB poller fanning new rows out to every connected browser."""
+
+    def __init__(self) -> None:
+        self.subscribers: set[asyncio.Queue] = set()
+        self.last_id = 0
+
+    async def run(self) -> None:
+        async with pool.connection() as conn:
+            row = await (await conn.execute("SELECT coalesce(max(id), 0) AS id FROM readings")).fetchone()
+            self.last_id = row["id"]
+        # Poll even with no browsers connected, so last_id stays current and the
+        # first browser to connect doesn't get a burst of old rows.
+        while True:
+            await asyncio.sleep(1)
+            try:
+                async with pool.connection() as conn:
+                    rows = await (await conn.execute(
+                        f"SELECT {COLUMNS} FROM readings WHERE id > %s ORDER BY id", (self.last_id,)
+                    )).fetchall()
+            except Exception as e:  # DB restart etc.: keep the stream alive, try again next second
+                print(f"poll failed: {e}", flush=True)
+                continue
+            for r in rows:
+                self.last_id = r["id"]
+                for q in self.subscribers:
+                    q.put_nowait(r)
+
+
+broadcaster = Broadcaster()
+
+
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    await pool.open()
+    task = asyncio.create_task(broadcaster.run())
+    yield
+    task.cancel()
+    await pool.close()
+
+
+app = FastAPI(title="home_state · FastAPI + SSE", lifespan=lifespan)
+
+
+def to_json(r: dict) -> str:
+    return json.dumps({**r, "received_at": r["received_at"].isoformat()})
+
+
+@app.get("/api/readings")
+async def readings(minutes: int = Query(60, ge=1, le=10080)) -> list[dict]:
+    async with pool.connection() as conn:
+        return await (await conn.execute(
+            f"""SELECT {COLUMNS} FROM readings
+                WHERE received_at > now() - make_interval(mins => %s) AND received_at >= %s
+                ORDER BY id""", (minutes, DUMMY_DATA_BEFORE),
+        )).fetchall()
+
+
+@app.get("/api/stream")
+async def stream(request: Request, last_event_id: int | None = Header(None)) -> StreamingResponse:
+    q: asyncio.Queue = asyncio.Queue()
+
+    async def events():
+        broadcaster.subscribers.add(q)  # subscribe first so nothing slips past during replay
+        sent = last_event_id or 0
+        try:
+            yield "retry: 3000\n\n"
+            if last_event_id is not None:  # browser reconnected: replay what it missed
+                async with pool.connection() as conn:
+                    missed = await (await conn.execute(
+                        f"SELECT {COLUMNS} FROM readings WHERE id > %s ORDER BY id",
+                        (last_event_id,))).fetchall()
+                for r in missed:
+                    sent = r["id"]
+                    yield f"id: {r['id']}\nevent: reading\ndata: {to_json(r)}\n\n"
+            while not await request.is_disconnected():
+                try:
+                    r = await asyncio.wait_for(q.get(), timeout=15)
+                    if r["id"] <= sent:  # already sent during replay
+                        continue
+                    sent = r["id"]
+                    yield f"id: {r['id']}\nevent: reading\ndata: {to_json(r)}\n\n"
+                except TimeoutError:
+                    yield ": keepalive\n\n"  # comment line; stops proxies timing out the connection
+        finally:
+            broadcaster.subscribers.discard(q)
+
+    return StreamingResponse(events(), media_type="text/event-stream",
+                             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
+@app.get("/api/stats")
+async def stats() -> dict:
+    return {"browsers_connected": len(broadcaster.subscribers), "last_id": broadcaster.last_id}
+
+
+@app.get("/")
+async def index() -> FileResponse:
+    return FileResponse(STATIC / "index.html")
