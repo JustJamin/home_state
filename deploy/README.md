@@ -39,3 +39,26 @@ kubectl -n home-state exec postgres-0 -- psql -U home_state -c \
 - NetworkPolicies only let `app: scanner` pods reach Postgres on 5432, and nothing can connect to the scanner. Postgres isn't exposed outside the cluster.
 - The scanner uses the `Recreate` strategy, so two scanners never run at once. It's pinned to `lenovo` (the BLE adapter) and runs as `nobody` with a read-only root filesystem and no capabilities.
 - Run only one of Compose and k3s at a time. Both would scan and store every reading twice.
+
+### Grafana dashboard
+
+Open **http://100.79.164.117:30300** (lenovo's Tailscale IP) from any tailnet device. Port 30300 isn't reachable from the LAN, because k3s binds NodePorts only to 127.0.0.1 and the Tailscale IP. Anyone who can reach it can view without logging in. Editing needs the admin login, and because the dashboard is provisioned from `grafana/home_state.json`, edits made in the UI aren't saved. To change it, edit the JSON and run `kubectl apply -k deploy`.
+
+```sh
+# one-time, before `kubectl apply -k deploy`: Grafana admin + read-only DB passwords
+kubectl -n home-state create secret generic grafana \
+  --from-literal=admin-password="$(openssl rand -base64 18)" \
+  --from-literal=db-password="$(openssl rand -hex 24)"
+
+# only if the Postgres volume already existed before Grafana was added
+# (initdb/002_grafana_role.sh runs by itself on a fresh volume)
+kubectl -n home-state exec -i postgres-0 -- env POSTGRES_USER=home_state POSTGRES_DB=home_state \
+  sh -s < deploy/initdb/002_grafana_role.sh
+
+# admin password
+kubectl -n home-state get secret grafana -o jsonpath='{.data.admin-password}' | base64 -d; echo
+```
+
+- Grafana connects as the `grafana` Postgres role, which has `SELECT` on `readings` only.
+- Grafana's own database is an `emptyDir`. Everything is provisioned from `deploy/grafana/`, so a pod restart loses nothing.
+- The "Missed updates" panel counts gaps in each board's counter, so a board reboot also shows up as a gap.

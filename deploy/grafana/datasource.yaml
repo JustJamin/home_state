@@ -1,0 +1,17 @@
+apiVersion: 1
+
+datasources:
+  - name: home_state
+    uid: home-state-pg
+    type: grafana-postgresql-datasource
+    url: db:5432
+    user: grafana
+    isDefault: true
+    editable: false
+    jsonData:
+      database: home_state
+      sslmode: disable
+      postgresVersion: 1700
+      timescaledb: false
+    secureJsonData:
+      password: ${GRAFANA_DB_PASSWORD}

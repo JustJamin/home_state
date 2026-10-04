@@ -1,8 +1,8 @@
-# Postgres only accepts connections from the scanner; nothing may connect to the scanner.
+# Postgres only accepts connections from the scanner and Grafana; nothing may connect to the scanner.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
-  name: postgres-from-scanner
+  name: postgres-from-clients
 spec:
   podSelector:
     matchLabels:
@@ -13,6 +13,9 @@ spec:
         - podSelector:
             matchLabels:
               app: scanner
+        - podSelector:
+            matchLabels:
+              app: grafana
       ports:
         - port: 5432
 ---
