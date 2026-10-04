@@ -1,0 +1,17 @@
+menu "home_state advertiser"
+
+    config HS_BOARD_ID
+        int "Board ID"
+        range 0 255
+        default 1
+        help
+            Unique per board. Goes into the payload and the device name (hs-<id>).
+
+    config HS_UPDATE_INTERVAL_MS
+        int "Payload update interval (ms)"
+        range 1000 600000
+        default 5000
+        help
+            How often the counter and dummy readings are refreshed in the advert.
+
+endmenu

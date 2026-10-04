@@ -24,6 +24,14 @@ XIAO ESP32-C6 boards ──BLE advertising──▶ lenovo (hci0) ──▶ scan
 - **Docker-published ports bypass ufw on lenovo.** Never publish Postgres to the network; bind it to `127.0.0.1` if the host needs access.
 - **lenovo is only reachable over Tailscale.** Host setup (Docker and k3s installs, firewall rules) lives in the `sysadmin` repo, not here.
 
+### Host dependencies (sysadmin repo)
+This project is blocked on these host items. They're tracked under `## home_state dependencies` in `~/repo/sysadmin/TODO.md`, so track them there, not here:
+- `jamin` in the `dialout` group, so the board on `/dev/ttyACM0` can be flashed (step 1)
+- apt build dependencies for ESP-IDF (step 1)
+- ESP-IDF toolchain, target esp32c6, in `~/esp/esp-idf` (step 1)
+- Docker + Compose (step 4)
+- k3s single-node (step 5)
+
 ---
 
 ## Advertising payload (draft v1)
@@ -36,7 +44,8 @@ The payload goes in **manufacturer-specific data** (AD type `0xFF`). Multi-byte 
 | 2      | 1    | version      | payload format version, starts at `1`          |
 | 3      | 1    | board ID     | unique per board                               |
 | 4      | 2    | counter      | increments each update; used to drop duplicate adverts |
-| 6      | n    | data         | v1: dummy values; real sensor fields later     |
+| 6      | 2    | temp_c_x100  | v1 dummy: int16, °C × 100 (triangle wave 20.00–23.00) |
+| 8      | 2    | uptime_s     | v1 dummy: uint16, seconds since boot (wraps)   |
 
 Device name: `hs-<board id>` (e.g. `hs-01`). Keep the whole advert ≤ 31 bytes.
 Once the format settles, move this table into `docs/payload.md` and keep it as the source of truth.
@@ -66,8 +75,8 @@ home_state/
 ## Status
 
 - [x] Repo created
-- [ ] Firmware: dummy-data advertiser on one board
-- [ ] lenovo sees the adverts (bluetoothctl / btmon)
+- [x] Firmware: dummy-data advertiser on one board
+- [x] lenovo sees the adverts (bluetoothctl / btmon)
 - [ ] Scanner script on the host
 - [ ] Docker Compose: scanner + Postgres
 - [ ] k3s deployment
