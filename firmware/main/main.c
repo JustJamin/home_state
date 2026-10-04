@@ -2,9 +2,12 @@
  * home_state transmitter: broadcasts readings in BLE legacy advertising packets.
  * Payload format (manufacturer-specific data) is documented in the repo README.
  */
+#include <math.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 
+#include "driver/temperature_sensor.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -16,6 +19,8 @@
 #define HS_COMPANY_ID      0xFFFF
 #define HS_PAYLOAD_VERSION 1
 #define HS_MFG_LEN         10
+/* temp_c_x100 value meaning "no reading" */
+#define HS_TEMP_NONE       INT16_MIN
 /* 1600 * 0.625 ms = 1 s */
 #define HS_ADV_ITVL        1600
 
@@ -25,6 +30,7 @@ static char s_name[8];
 static uint8_t s_own_addr_type;
 static uint8_t s_mfg[HS_MFG_LEN];
 static uint16_t s_counter;
+static temperature_sensor_handle_t s_tsens;
 
 static void put_u16_le(uint8_t *p, uint16_t v)
 {
@@ -32,11 +38,21 @@ static void put_u16_le(uint8_t *p, uint16_t v)
     p[1] = v >> 8;
 }
 
-/* v1 dummy readings: a temperature triangle wave around 21.50 C, and uptime. */
+/* Chip die temperature: reads several degrees above ambient (self-heating). */
+static int16_t read_temp_c_x100(void)
+{
+    float temp_c;
+    esp_err_t err = temperature_sensor_get_celsius(s_tsens, &temp_c);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "temperature read failed: %s", esp_err_to_name(err));
+        return HS_TEMP_NONE;
+    }
+    return (int16_t)lroundf(temp_c * 100);
+}
+
 static void build_payload(void)
 {
-    int step = s_counter % 60;
-    int16_t temp_c_x100 = 2000 + (step < 30 ? step : 60 - step) * 10;
+    int16_t temp_c_x100 = read_temp_c_x100();
     uint16_t uptime_s = (uint16_t)(xTaskGetTickCount() / configTICK_RATE_HZ);
 
     put_u16_le(&s_mfg[0], HS_COMPANY_ID);
@@ -152,6 +168,11 @@ void app_main(void)
     ESP_ERROR_CHECK(err);
 
     snprintf(s_name, sizeof(s_name), "hs-%02u", CONFIG_HS_BOARD_ID);
+
+    /* -10..80 C is the range with the best accuracy on the C6 */
+    temperature_sensor_config_t tsens_cfg = TEMPERATURE_SENSOR_CONFIG_DEFAULT(-10, 80);
+    ESP_ERROR_CHECK(temperature_sensor_install(&tsens_cfg, &s_tsens));
+    ESP_ERROR_CHECK(temperature_sensor_enable(s_tsens));
 
     ESP_ERROR_CHECK(nimble_port_init());
     ble_hs_cfg.sync_cb = on_sync;
