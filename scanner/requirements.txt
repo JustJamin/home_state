@@ -1,2 +1,4 @@
 bleak==3.0.2
 dbus-fast==5.2.0
+psycopg==3.3.6
+psycopg-binary==3.3.6
