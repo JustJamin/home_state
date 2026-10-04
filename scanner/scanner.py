@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import signal
+import time
 from dataclasses import asdict
 from datetime import datetime, timezone
 
@@ -17,12 +18,21 @@ from payload import COMPANY_ID, decode
 
 log = logging.getLogger("scanner")
 
+# If no BLE advert at all (from any device) arrives for this long, assume
+# scanning has silently died (e.g. the adapter re-enumerated on USB and BlueZ
+# dropped our discovery session) and exit so the container gets restarted.
+STALL_SECONDS = int(os.environ.get("STALL_SECONDS", "120"))
+
 # board_id -> last counter seen; adverts repeat ~5x per counter value
 _last_counter: dict[int, int] = {}
+_last_advert = time.monotonic()
 
 
 def make_callback(queue: asyncio.Queue | None):
     def on_advert(device: BLEDevice, adv: AdvertisementData) -> None:
+        global _last_advert
+        _last_advert = time.monotonic()
+
         data = adv.manufacturer_data.get(COMPANY_ID)
         if data is None:
             return
@@ -62,12 +72,23 @@ async def main() -> None:
         queue = asyncio.Queue()
         writer_task = asyncio.create_task(writer(url, queue))
 
+    stalled = False
     async with BleakScanner(make_callback(queue)):
         log.info("scanning for company ID 0x%04X", COMPANY_ID)
-        await stop.wait()
+        while not stop.is_set():
+            try:
+                await asyncio.wait_for(stop.wait(), timeout=10)
+            except TimeoutError:
+                silent = time.monotonic() - _last_advert
+                if silent > STALL_SECONDS:
+                    log.error("no BLE adverts for %.0fs; scanning has stalled, exiting", silent)
+                    stalled = True
+                    break
 
     if writer_task is not None:
         writer_task.cancel()
+    if stalled:
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":
