@@ -39,10 +39,10 @@ class Broadcaster:
         async with pool.connection() as conn:
             row = await (await conn.execute("SELECT coalesce(max(id), 0) AS id FROM readings")).fetchone()
             self.last_id = row["id"]
+        # Poll even with no browsers connected, so last_id stays current and the
+        # first browser to connect doesn't get a burst of old rows.
         while True:
             await asyncio.sleep(1)
-            if not self.subscribers:
-                continue
             try:
                 async with pool.connection() as conn:
                     rows = await (await conn.execute(

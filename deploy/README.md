@@ -62,3 +62,21 @@ kubectl -n home-state get secret grafana -o jsonpath='{.data.admin-password}' | 
 - Grafana connects as the `grafana` Postgres role, which has `SELECT` on `readings` only.
 - Grafana's own database is an `emptyDir`. Everything is provisioned from `deploy/grafana/`, so a pod restart loses nothing.
 - The "Missed updates" panel counts gaps in each board's counter, so a board reboot also shows up as a gap.
+
+### Demo dashboards (ports 30301–30304)
+
+Streamlit, Dash, NiceGUI and FastAPI+SSE, side by side with Grafana. See `dashboards/README.md`.
+
+```sh
+# one-time, before `kubectl apply -k deploy`
+kubectl -n home-state create secret generic dashboards --from-literal=db-password="$(openssl rand -hex 24)"
+# only if the Postgres volume already existed (initdb/003_dashboards_role.sh runs by itself on a fresh one)
+kubectl -n home-state exec -i postgres-0 -- env POSTGRES_USER=home_state POSTGRES_DB=home_state \
+  sh -s < deploy/initdb/003_dashboards_role.sh
+
+deploy/push-dashboards.sh          # build + push all four images, restart them
+kubectl apply -k deploy
+```
+
+- They connect as the `dashboards` role (`SELECT` on `readings` only). The NetworkPolicy lets pods labelled `role: dashboard` reach Postgres.
+- Each runs as `nobody` with a read-only root filesystem and an `emptyDir` on `/tmp`.
