@@ -71,15 +71,18 @@ spec:
               path: /api/health
               port: http
             periodSeconds: 10
+            timeoutSeconds: 5
           securityContext:
             allowPrivilegeEscalation: false
             capabilities:
               drop: ["ALL"]
           resources:
+            # Grafana 13 sits at ~380Mi idle; a 384Mi limit left it thrashing
+            # and failing readiness (2026-10-04)
             requests:
-              memory: 128Mi
+              memory: 256Mi
             limits:
-              memory: 384Mi
+              memory: 768Mi
           volumeMounts:
             - name: data
               mountPath: /var/lib/grafana
