@@ -1,0 +1,14 @@
+# kubectl apply -k deploy/   (see deploy/README.md)
+# Lives in deploy/ rather than deploy/k8s/ so it can reuse initdb/ with compose.
+namespace: home-state
+
+resources:
+  - k8s/namespace.yaml
+  - k8s/postgres.yaml
+  - k8s/scanner.yaml
+  - k8s/networkpolicy.yaml
+
+configMapGenerator:
+  - name: postgres-initdb
+    files:
+      - initdb/001_schema.sql

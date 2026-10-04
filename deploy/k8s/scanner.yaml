@@ -1,0 +1,55 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: scanner
+spec:
+  replicas: 1
+  # never run two scanners at once (duplicate rows)
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: scanner
+  template:
+    metadata:
+      labels:
+        app: scanner
+    spec:
+      # the BLE adapter is on lenovo
+      nodeSelector:
+        kubernetes.io/hostname: lenovo
+      securityContext:
+        # must be a uid the host dbus-daemon can resolve (see deploy/README.md)
+        runAsUser: 65534
+        runAsGroup: 65534
+        runAsNonRoot: true
+      containers:
+        - name: scanner
+          image: localhost:5000/home_state-scanner:latest
+          imagePullPolicy: Always
+          env:
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: postgres
+                  key: password
+            - name: DATABASE_URL
+              value: postgresql://home_state:$(POSTGRES_PASSWORD)@db:5432/home_state
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              memory: 64Mi
+            limits:
+              memory: 256Mi
+          volumeMounts:
+            - name: dbus
+              mountPath: /run/dbus/system_bus_socket
+      volumes:
+        - name: dbus
+          hostPath:
+            path: /run/dbus/system_bus_socket
+            type: Socket
