@@ -78,5 +78,5 @@ home_state/
 - [x] Firmware: dummy-data advertiser on one board
 - [x] lenovo sees the adverts (bluetoothctl / btmon)
 - [x] Scanner script on the host
-- [ ] Docker Compose: scanner + Postgres
+- [x] Docker Compose: scanner + Postgres
 - [ ] k3s deployment

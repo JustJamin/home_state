@@ -1,8 +1,10 @@
-"""Listen for home_state boards over BLE and print each new reading as JSON."""
+"""Listen for home_state boards over BLE, print each new reading as JSON and,
+if DATABASE_URL is set, store it in Postgres."""
 
 import asyncio
 import json
 import logging
+import os
 import signal
 from dataclasses import asdict
 from datetime import datetime, timezone
@@ -19,26 +21,31 @@ log = logging.getLogger("scanner")
 _last_counter: dict[int, int] = {}
 
 
-def on_advert(device: BLEDevice, adv: AdvertisementData) -> None:
-    data = adv.manufacturer_data.get(COMPANY_ID)
-    if data is None:
-        return
-    reading = decode(data)
-    if reading is None:
-        log.warning("unknown payload from %s: %s", device.address, data.hex())
-        return
-    if _last_counter.get(reading.board_id) == reading.counter:
-        return
-    _last_counter[reading.board_id] = reading.counter
+def make_callback(queue: asyncio.Queue | None):
+    def on_advert(device: BLEDevice, adv: AdvertisementData) -> None:
+        data = adv.manufacturer_data.get(COMPANY_ID)
+        if data is None:
+            return
+        reading = decode(data)
+        if reading is None:
+            log.warning("unknown payload from %s: %s", device.address, data.hex())
+            return
+        if _last_counter.get(reading.board_id) == reading.counter:
+            return
+        _last_counter[reading.board_id] = reading.counter
 
-    record = {
-        "ts": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-        "address": device.address,
-        "name": adv.local_name,
-        "rssi": adv.rssi,
-        **asdict(reading),
-    }
-    print(json.dumps(record), flush=True)
+        record = {
+            "ts": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            "address": device.address,
+            "name": adv.local_name,
+            "rssi": adv.rssi,
+            **asdict(reading),
+        }
+        print(json.dumps(record), flush=True)
+        if queue is not None:
+            queue.put_nowait(record)
+
+    return on_advert
 
 
 async def main() -> None:
@@ -47,9 +54,20 @@ async def main() -> None:
     for sig in (signal.SIGINT, signal.SIGTERM):
         loop.add_signal_handler(sig, stop.set)
 
-    async with BleakScanner(on_advert):
+    queue = None
+    writer_task = None
+    if url := os.environ.get("DATABASE_URL"):
+        from db import writer
+
+        queue = asyncio.Queue()
+        writer_task = asyncio.create_task(writer(url, queue))
+
+    async with BleakScanner(make_callback(queue)):
         log.info("scanning for company ID 0x%04X", COMPANY_ID)
         await stop.wait()
+
+    if writer_task is not None:
+        writer_task.cancel()
 
 
 if __name__ == "__main__":
