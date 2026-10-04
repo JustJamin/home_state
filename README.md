@@ -60,7 +60,7 @@ Once the format settles, move this table into `docs/payload.md` and keep it as t
 3. **Scanner on the host:** a Python script using `bleak` that filters on company ID `0xFFFF`, decodes the payload and prints it.
 4. **Docker + Compose:** run the scanner and Postgres containers together and write readings to Postgres.
 5. **k3s:** a single-node cluster on lenovo. Put Postgres in a StatefulSet with a `local-path` PVC. Run the scanner as a Deployment pinned to lenovo that mounts the D-Bus socket via `hostPath`.
-6. **Later:** real sensors, Grafana dashboards, backups of the database.
+6. **Later:** real sensors, backups of the database. (The Grafana dashboard is done; see `deploy/README.md`.)
 
 ## Planned layout
 
@@ -81,3 +81,6 @@ home_state/
 - [x] Scanner script on the host
 - [x] Docker Compose: scanner + Postgres
 - [x] k3s deployment
+- [x] Grafana dashboard (k3s, tailnet-only: http://100.79.164.117:30300)
+- [ ] Real sensors
+- [ ] Database backups
