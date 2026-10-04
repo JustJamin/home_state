@@ -108,7 +108,8 @@
     {
       "id": 5,
       "type": "timeseries",
-      "title": "Temperature (dummy)",
+      "title": "Chip temperature",
+      "description": "ESP32-C6 internal sensor: reads several degrees above room temperature. Values before 2026-10-04 20:30:52 UTC are dummy data.",
       "gridPos": { "h": 9, "w": 12, "x": 0, "y": 4 },
       "datasource": { "type": "grafana-postgresql-datasource", "uid": "home-state-pg" },
       "targets": [

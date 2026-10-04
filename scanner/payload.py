@@ -11,6 +11,8 @@ COMPANY_ID = 0xFFFF
 
 # version, board_id, counter, temp_c_x100, uptime_s
 _V1 = struct.Struct("<BBHhH")
+# temp_c_x100 value the board sends when it has no reading
+_TEMP_NONE = -32768
 
 
 @dataclass(frozen=True)
@@ -18,7 +20,7 @@ class Reading:
     version: int
     board_id: int
     counter: int
-    temp_c: float
+    temp_c: float | None
     uptime_s: int
 
 
@@ -27,4 +29,5 @@ def decode(data: bytes) -> Reading | None:
     if len(data) < 1 or data[0] != 1 or len(data) < _V1.size:
         return None
     version, board_id, counter, temp_c_x100, uptime_s = _V1.unpack_from(data)
-    return Reading(version, board_id, counter, temp_c_x100 / 100, uptime_s)
+    temp_c = None if temp_c_x100 == _TEMP_NONE else temp_c_x100 / 100
+    return Reading(version, board_id, counter, temp_c, uptime_s)

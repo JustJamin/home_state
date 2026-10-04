@@ -45,8 +45,8 @@ The payload goes in **manufacturer-specific data** (AD type `0xFF`). Multi-byte 
 | 2      | 1    | version      | payload format version, starts at `1`          |
 | 3      | 1    | board ID     | unique per board                               |
 | 4      | 2    | counter      | increments each update; used to drop duplicate adverts |
-| 6      | 2    | temp_c_x100  | v1 dummy: int16, °C × 100 (triangle wave 20.00–23.00) |
-| 8      | 2    | uptime_s     | v1 dummy: uint16, seconds since boot (wraps)   |
+| 6      | 2    | temp_c_x100  | int16, °C × 100. ESP32-C6 **chip** temperature (reads above ambient, ~1 °C steps). `0x8000` = no reading |
+| 8      | 2    | uptime_s     | uint16, seconds since boot (wraps after ~18 h) |
 
 Device name: `hs-<board id>` (e.g. `hs-01`). Keep the whole advert ≤ 31 bytes.
 Once the format settles, move this table into `docs/payload.md` and keep it as the source of truth.
@@ -84,3 +84,5 @@ home_state/
 - [x] Grafana dashboard (k3s, tailnet-only: http://100.79.164.117:30300)
 - [ ] Real sensors
 - [ ] Database backups
+
+Rows before 2026-10-04 20:30:52 UTC hold dummy temperatures (a triangle wave between 20.00 and 23.00). From then on, `temp_c` is the chip temperature.

@@ -13,6 +13,10 @@ class DecodeTest(unittest.TestCase):
         r = decode(bytes.fromhex("010102000cfe0000"))
         self.assertEqual(r.temp_c, -5.0)
 
+    def test_no_temp_reading(self):
+        r = decode(bytes.fromhex("0101020000800000"))
+        self.assertIsNone(r.temp_c)
+
     def test_rejects_unknown_or_short(self):
         self.assertIsNone(decode(b""))
         self.assertIsNone(decode(bytes.fromhex("02010f0066084b00")))
