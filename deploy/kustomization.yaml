@@ -6,9 +6,20 @@ resources:
   - k8s/namespace.yaml
   - k8s/postgres.yaml
   - k8s/scanner.yaml
+  - k8s/grafana.yaml
   - k8s/networkpolicy.yaml
 
 configMapGenerator:
   - name: postgres-initdb
     files:
       - initdb/001_schema.sql
+      - initdb/002_grafana_role.sh
+  - name: grafana-datasources
+    files:
+      - grafana/datasource.yaml
+  - name: grafana-dashboard-providers
+    files:
+      - grafana/dashboards.yaml
+  - name: grafana-dashboards
+    files:
+      - grafana/home_state.json

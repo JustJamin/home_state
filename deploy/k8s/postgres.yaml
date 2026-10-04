@@ -1,4 +1,5 @@
-# Needs the "postgres" Secret (key: password); created by hand, see deploy/README.md.
+# Needs the "postgres" Secret (key: password) and the "grafana" Secret (key: db-password);
+# both created by hand, see deploy/README.md.
 apiVersion: v1
 kind: Service
 metadata:
@@ -39,6 +40,12 @@ spec:
                 secretKeyRef:
                   name: postgres
                   key: password
+            # used once by initdb/002_grafana_role.sh on a fresh volume
+            - name: GRAFANA_DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: grafana
+                  key: db-password
             - name: PGDATA
               value: /var/lib/postgresql/data/pgdata
           ports:
