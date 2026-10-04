@@ -31,6 +31,7 @@ This project is blocked on these host items. They're tracked under `## home_stat
 - ESP-IDF toolchain, target esp32c6, in `~/esp/esp-idf` (step 1)
 - Docker + Compose (step 4)
 - k3s single-node (step 5)
+- Local image registry on `127.0.0.1:5000` that k3s pulls the scanner image from (step 5)
 
 ---
 
