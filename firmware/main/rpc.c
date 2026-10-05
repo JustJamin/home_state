@@ -61,6 +61,14 @@ static void device_id(char *out, size_t len)
     snprintf(out, len, "%02x%02x%02x%02x%02x%02x", mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
 }
 
+/* The address the node advertises from (what the scanner records), e.g. 58:E6:C5:19:50:8A. */
+static void ble_address(char *out, size_t len)
+{
+    uint8_t mac[8] = {0};
+    esp_read_mac(mac, ESP_MAC_BT);
+    snprintf(out, len, "%02X:%02X:%02X:%02X:%02X:%02X", mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+}
+
 static cJSON *m_device_info(const cJSON *params, rpc_error_t *err)
 {
     if (!no_params(params, err)) {
@@ -76,6 +84,9 @@ static cJSON *m_device_info(const cJSON *params, rpc_error_t *err)
 
     cJSON *r = cJSON_CreateObject();
     cJSON_AddStringToObject(r, "device_id", id);
+    char bt[18];
+    ble_address(bt, sizeof(bt));
+    cJSON_AddStringToObject(r, "ble_address", bt);
     cJSON_AddStringToObject(r, "app", app->project_name);
     cJSON_AddStringToObject(r, "version", app->version);
     cJSON_AddStringToObject(r, "idf", app->idf_ver);

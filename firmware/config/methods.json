@@ -1,7 +1,15 @@
 {
   "app": "hs_advertiser",
   "methods_version": 1,
-  "description": "JSON-RPC methods of hs_advertiser. Param schemas use a JSON Schema subset (type, properties, required, additionalProperties, minimum, maximum, enum). Keep in step with firmware/main/rpc.c and settings.c.",
+  "description": "JSON-RPC methods of hs_advertiser. Param schemas use a JSON Schema subset (type, properties, required, additionalProperties, minimum, maximum, enum; default is a hint for the config builder). Keep in step with firmware/main/rpc.c and settings.c.",
+  "rf_stacks": {
+    "versions": [
+      "v1",
+      "v2"
+    ],
+    "default": "v1",
+    "description": "Radio stack versions this firmware supports. Chosen per profile; recorded, not yet sent to the node."
+  },
   "methods": {
     "config.set": {
       "description": "Change settings. Only the keys given are changed; all apply immediately and persist across reboots.",
@@ -9,43 +17,112 @@
         "type": "object",
         "additionalProperties": false,
         "properties": {
-          "update_interval_ms": {"type": "integer", "minimum": 1000, "maximum": 600000, "description": "How often the payload (counter, temperature) is refreshed"},
-          "adv_interval_ms": {"type": "integer", "minimum": 100, "maximum": 10240, "description": "BLE advertising interval"},
+          "update_interval_ms": {
+            "type": "integer",
+            "minimum": 1000,
+            "maximum": 600000,
+            "description": "How often the payload (counter, temperature) is refreshed",
+            "default": 5000
+          },
+          "adv_interval_ms": {
+            "type": "integer",
+            "minimum": 100,
+            "maximum": 10240,
+            "description": "BLE advertising interval",
+            "default": 1000
+          },
           "led": {
             "type": "object",
             "additionalProperties": false,
             "properties": {
-              "mode": {"type": "string", "enum": ["off", "blink", "heartbeat"], "description": "User LED pattern"},
-              "blink_hz": {"type": "number", "minimum": 0.1, "maximum": 10, "description": "Blink (or heartbeat) rate in Hz"}
+              "mode": {
+                "type": "string",
+                "enum": [
+                  "off",
+                  "blink",
+                  "heartbeat"
+                ],
+                "description": "User LED pattern",
+                "default": "blink"
+              },
+              "blink_hz": {
+                "type": "number",
+                "minimum": 0.1,
+                "maximum": 10,
+                "description": "Blink (or heartbeat) rate in Hz",
+                "default": 1
+              }
             }
           }
         }
       }
     },
-    "config.reset": {"description": "Restore all settings to their defaults.", "params": null},
+    "config.reset": {
+      "description": "Restore all settings to their defaults.",
+      "params": null
+    },
     "device.identify": {
       "description": "Blink the LED fast so you can find the board.",
       "params": {
         "type": "object",
         "additionalProperties": false,
-        "properties": {"seconds": {"type": "number", "minimum": 1, "maximum": 300}}
+        "properties": {
+          "seconds": {
+            "type": "number",
+            "minimum": 1,
+            "maximum": 300,
+            "default": 10
+          }
+        }
       }
     },
-    "device.reboot": {"description": "Reboot the node. A deploy reconnects before the next call.", "params": null, "reboots": true},
+    "device.reboot": {
+      "description": "Reboot the node. A deploy reconnects before the next call.",
+      "params": null,
+      "reboots": true
+    },
     "board.set_id": {
       "description": "Set this node's board ID (hs-<id>). Per-device: don't put this in shared configs.",
       "params": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["id"],
-        "properties": {"id": {"type": "integer", "minimum": 0, "maximum": 255}}
+        "required": [
+          "id"
+        ],
+        "properties": {
+          "id": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 255,
+            "default": 1
+          }
+        }
       },
       "per_device": true
     },
-    "config.get": {"description": "Current settings.", "params": null},
-    "device.info": {"description": "Device ID, firmware, partition, board ID.", "params": null, "script": false},
-    "device.status": {"description": "Uptime, heap, reset reason, temperature.", "params": null, "script": false},
-    "ota.status": {"description": "OTA transfer state.", "params": null, "script": false},
-    "rpc.discover": {"description": "List of methods.", "params": null, "script": false}
+    "config.get": {
+      "description": "Current settings.",
+      "params": null
+    },
+    "device.info": {
+      "description": "Device ID, firmware, partition, board ID.",
+      "params": null,
+      "script": false
+    },
+    "device.status": {
+      "description": "Uptime, heap, reset reason, temperature.",
+      "params": null,
+      "script": false
+    },
+    "ota.status": {
+      "description": "OTA transfer state.",
+      "params": null,
+      "script": false
+    },
+    "rpc.discover": {
+      "description": "List of methods.",
+      "params": null,
+      "script": false
+    }
   }
 }
