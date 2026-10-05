@@ -2,7 +2,7 @@
  * home_state BLE OTA service, protocol v1 (spec: docs/ota-protocol.md).
  *
  * INFO (read)            JSON: firmware version, board, partition, rollback state
- * CTRL (write + notify)  BEGIN / END / APPLY / ABORT commands; replies and ACK/NAK as notifications
+ * CTRL (write + notify)  BEGIN / SYNC / END / APPLY / ABORT; replies (and fatal NAKs) as notifications
  * DATA (write [no rsp])  [u32 offset LE][image bytes]
  *
  * No authentication: any client in range can flash a valid hs_advertiser
@@ -27,15 +27,15 @@
 static const char *TAG = "ota";
 
 #define PROTO_VERSION     1
-#define WINDOW_CHUNKS     16
+#define WINDOW_CHUNKS     16           /* suggested burst between SYNCs */
 #define MAX_CHUNK_DATA    508          /* Web Bluetooth caps a write at 512 bytes, minus the 4-byte offset */
 #define IDLE_TIMEOUT_US   (60LL * 1000 * 1000)
 #define VERIFY_TIMEOUT_US (60LL * 1000 * 1000)
 #define APP_DESC_OFFSET   32           /* image header (24) + first segment header (8) */
 #define HEADER_PEEK       (APP_DESC_OFFSET + 80)  /* enough to cover esp_app_desc_t.project_name */
 
-enum { CMD_BEGIN = 0x01, CMD_END = 0x02, CMD_APPLY = 0x03, CMD_ABORT = 0x04 };
-enum { RSP_BEGIN = 0x81, RSP_END = 0x82, RSP_APPLY = 0x83, RSP_ABORT = 0x84, RSP_ACK = 0x90, RSP_NAK = 0x91 };
+enum { CMD_BEGIN = 0x01, CMD_END = 0x02, CMD_APPLY = 0x03, CMD_ABORT = 0x04, CMD_SYNC = 0x05 };
+enum { RSP_BEGIN = 0x81, RSP_END = 0x82, RSP_APPLY = 0x83, RSP_ABORT = 0x84, RSP_SYNC = 0x85, RSP_NAK = 0x91 };
 enum {
     ST_OK = 0, ST_BAD_STATE = 1, ST_TOO_BIG = 2, ST_FLASH = 3, ST_BAD_OFFSET = 4,
     ST_HASH = 5, ST_IMAGE_INVALID = 6, ST_WRONG_PROJECT = 7, ST_BAD_CMD = 8,
@@ -63,8 +63,8 @@ static bool s_ota_open;
 static psa_hash_operation_t s_hash;
 static bool s_hash_open;
 static uint8_t s_expected_sha[32];
-static uint32_t s_size, s_received, s_chunks_since_ack;
-static bool s_nak_sent;
+static uint32_t s_size, s_received;
+static bool s_gap_logged;
 static uint8_t s_peek[HEADER_PEEK];
 
 static esp_timer_handle_t s_idle_timer, s_verify_timer, s_restart_timer;
@@ -121,8 +121,8 @@ static void reset_transfer(const char *why)
         s_hash_open = false;
     }
     s_xfer = XFER_IDLE;
-    s_received = s_size = s_chunks_since_ack = 0;
-    s_nak_sent = false;
+    s_received = s_size = 0;
+    s_gap_logged = false;
 }
 
 static void touch_idle_timer(void)
@@ -246,6 +246,11 @@ static void on_ctrl_write(const uint8_t *p, uint16_t len)
     case CMD_APPLY:
         cmd_apply();
         break;
+    case CMD_SYNC:
+        /* the client asks where we are after each burst; it resumes from here */
+        s_gap_logged = false;
+        reply_offset(RSP_SYNC, s_xfer == XFER_IDLE ? ST_BAD_STATE : ST_OK, s_received);
+        break;
     case CMD_ABORT:
         reset_transfer("ABORT");
         reply(RSP_ABORT, ST_OK, NULL, 0);
@@ -265,15 +270,14 @@ static void on_data_write(const uint8_t *p, uint16_t len)
     uint16_t n = len - 4;
 
     if (offset != s_received) {
-        /* gap or duplicate: one NAK, then ignore until the client resends from s_received */
-        if (!s_nak_sent) {
-            ESP_LOGW(TAG, "chunk at %lu, expected %lu: NAK", (unsigned long)offset, (unsigned long)s_received);
-            reply_offset(RSP_NAK, ST_BAD_OFFSET, s_received);
-            s_nak_sent = true;
+        /* gap or duplicate: ignore; the client's next SYNC tells it where to resume */
+        if (!s_gap_logged) {
+            ESP_LOGW(TAG, "chunk at %lu, expected %lu: ignoring until SYNC", (unsigned long)offset,
+                     (unsigned long)s_received);
+            s_gap_logged = true;
         }
         return;
     }
-    s_nak_sent = false;
     if (s_received + n > s_size) {
         reset_transfer("data past declared size");
         reply_offset(RSP_NAK, ST_TOO_BIG, 0);
@@ -307,11 +311,6 @@ static void on_data_write(const uint8_t *p, uint16_t len)
     }
     psa_hash_update(&s_hash, data, n);
     s_received += n;
-
-    if (++s_chunks_since_ack >= WINDOW_CHUNKS || s_received == s_size) {
-        s_chunks_since_ack = 0;
-        reply_offset(RSP_ACK, ST_OK, s_received);
-    }
 }
 
 static int info_json(char *buf, size_t size)
