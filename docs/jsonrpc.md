@@ -20,7 +20,7 @@ The param schemas are machine-readable in [`firmware/config/methods.json`](../fi
 | Method | Params | Result |
 |---|---|---|
 | `rpc.discover` | – | `{methods_version, methods: [...]}` |
-| `device.info` | – | `{device_id, app, version, idf, chip, chip_rev, board_id, methods_version, partition, state, rolled_back_from}` |
+| `device.info` | – | `{device_id, ble_address, app, version, idf, chip, chip_rev, board_id, methods_version, partition, state, rolled_back_from}` (`ble_address` from v1.3.0) |
 | `device.status` | – | `{uptime_s, free_heap, min_free_heap, reset_reason, temp_c, counter, ble_connected}` |
 | `config.get` | – | current settings (below) |
 | `config.set` | partial settings | `{config, reboot_required}` (all v1 settings apply live) |
@@ -29,6 +29,8 @@ The param schemas are machine-readable in [`firmware/config/methods.json`](../fi
 | `device.identify` | `{seconds?: 1–300}` (default 10) | `{seconds}`. Fast LED blink |
 | `device.reboot` | – | `{rebooting: true}`; reboots 300 ms later |
 | `ota.status` | – | `{transfer, received, size, next_partition, partition, state, rolled_back_from}` |
+
+`ble_address` is the address the node advertises from, which is what the scanner records (`readings.address`). On the ESP32-C6 it is the factory MAC + 2, e.g. `58:E6:C5:13:03:3E`.
 
 `device_id` is the chip's factory MAC from eFuse (e.g. `58e6c513033c`). It is permanent and matches the USB serial number. It's what the fleet record keys on. `board_id` is the short ID in adverts and readings (`hs-01`), stored in NVS and changed only with `board.set_id`.
 
@@ -63,6 +65,7 @@ A **config** is a script of JSON-RPC calls, run in order:
 {"calls": [{"method": "config.set", "params": {"led": {"mode": "blink", "blink_hz": 4}}}]}
 ```
 
+- **Radio stack:** `methods.json` may declare `rf_stacks` (`{versions, default}`). A profile records one of them; nothing is sent to the node yet.
 - **Defaults:** each firmware version ships one as `default.config.json` ([`firmware/config/default.json`](../firmware/config/default.json)).
 - **Validation:** `static/schema.js` (phone) and `scripts.py` (server) validate scripts identically against `methods.json`. They share test vectors (`dashboards/fastapi-sse/tests/script_vectors.json`). Methods marked `script: false` (read-only) or `per_device: true` (`board.set_id`) are refused in shared configs.
 - **Reboots:** a call to a method marked `reboots: true` makes the deploy runner reconnect before the next call.
