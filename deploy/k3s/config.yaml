@@ -1,0 +1,9 @@
+# k3s server config for lenovo (single node). Installed by deploy/k3s/apply.sh -> /etc/rancher/k3s/config.yaml
+# Installed BEFORE k3s so the first start uses it. Changes need: sudo systemctl restart k3s
+write-kubeconfig-mode: "0600"
+disable:
+  - traefik      # no ingress needed for home_state
+  - servicelb    # klipper LoadBalancer binds host ports via NAT, bypassing ufw
+kube-proxy-arg:
+  # NodePorts only on localhost + tailnet IP (NodePort NAT also bypasses ufw)
+  - "nodeport-addresses=127.0.0.1/32,100.79.164.117/32"
