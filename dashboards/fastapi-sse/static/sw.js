@@ -4,10 +4,10 @@
 //   catalogue files (/api/apps/<app>/<version>/<file>): cache-first, they're immutable
 //     (catalogue.js fills the same cache when it keeps a version offline)
 //   other /api/*: straight to the network; the app handles being offline itself
-const SHELL = "hs-shell-v1";
+const SHELL = "hs-shell-v2";
 const CATALOGUE = "hs-catalogue";
 const SHELL_FILES = [
-  "/provision", "/manifest.webmanifest",
+  "/provision", "/manifest.webmanifest", "/static/theme.css",
   "/static/app.js", "/static/ota.js", "/static/rpc.js", "/static/schema.js", "/static/store.js",
   "/static/sync.js", "/static/catalogue.js", "/static/deploy.js",
   "/static/icons/icon-192.png", "/static/icons/icon-512.png",
