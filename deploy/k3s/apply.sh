@@ -16,8 +16,11 @@ install -Dm644 "$DIR/k3s-after-docker.conf"          /etc/systemd/system/k3s.ser
 rm -f /etc/systemd/logind.conf.d/20-inhibit-delay.conf
 install -Dm644 "$DIR/logind-inhibit-delay.conf"      /etc/systemd/logind.conf.d/zz-k3s-inhibit-delay.conf
 install -Dm600 "$DIR/kubelet-graceful-shutdown.conf" "$KUBELET_DROPIN"
+install -Dm755 "$DIR/clean-dead-pods.sh"            /usr/local/sbin/k3s-clean-dead-pods
+install -Dm644 "$DIR/k3s-clean-dead-pods.service"   /etc/systemd/system/k3s-clean-dead-pods.service
 
 systemctl daemon-reload
+systemctl enable k3s-clean-dead-pods.service
 systemctl reload systemd-logind || systemctl restart systemd-logind
 systemctl restart k3s
 
@@ -44,5 +47,7 @@ k3s kubectl get --raw /api/v1/nodes/lenovo/proxy/configz \
   | grep -oE '"shutdownGracePeriod(CriticalPods)?":"[^"]*"' || echo "WARNING: not visible in configz"
 echo "--- logind InhibitDelayMaxUSec: $(busctl get-property org.freedesktop.login1 /org/freedesktop/login1 org.freedesktop.login1.Manager InhibitDelayMaxUSec)"
 echo "--- inhibitors (expect kubelet, delay):"; systemd-inhibit --list --no-pager | grep -i kubelet || echo "WARNING: no kubelet inhibitor"
+echo "--- dead-pod cleanup at boot: $(systemctl is-enabled k3s-clean-dead-pods.service)"
+echo "--- dead-pod cleanup dry run:"; DRY_RUN=1 /usr/local/sbin/k3s-clean-dead-pods || true
 echo "--- k3s After=: $(systemctl show k3s -p After --value | tr ' ' '\n' | grep -x docker.service || echo MISSING)"
 command -v etckeeper >/dev/null && etckeeper commit "k3s: home_state host config (graceful shutdown 60s, after docker, logind delay 90s)" || true

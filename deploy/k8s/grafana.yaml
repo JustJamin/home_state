@@ -20,7 +20,7 @@ kind: Deployment
 metadata:
   name: grafana
 spec:
-  replicas: 1
+  replicas: 0   # off for now (not in use; ~8 min start-up with emptyDir data). Scale to 1 to use it.
   strategy:
     type: Recreate
   selector:

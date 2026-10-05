@@ -8,6 +8,7 @@ Installing k3s itself, the firewall, and other OS setup stay in `~/repo/sysadmin
 | `config.yaml` | `/etc/rancher/k3s/config.yaml` | traefik + servicelb off and NodePorts on 127.0.0.1 + the tailnet IP only, because servicelb and NodePort NAT bypass ufw |
 | `kubelet-graceful-shutdown.conf` | `/var/lib/rancher/k3s/agent/etc/kubelet.conf.d/50-graceful-shutdown.conf` | stop pods properly on poweroff (Postgres shuts down cleanly) |
 | `logind-inhibit-delay.conf` | `/etc/systemd/logind.conf.d/zz-k3s-inhibit-delay.conf` | let kubelet delay shutdown for up to 90 s. The `zz-` name matters: unattended-upgrades ships a 30 s cap in `/usr/lib/systemd/logind.conf.d/`, and these drop-ins are merged in filename order, so the last one wins |
+| `clean-dead-pods.sh` + `k3s-clean-dead-pods.service` | `/usr/local/sbin/k3s-clean-dead-pods`, `/etc/systemd/system/` | once per boot after k3s, delete pods left Completed/Error by graceful shutdown. Only ReplicaSet/StatefulSet/DaemonSet pods are deleted (always replaced). Job and bare pods are kept as evidence. Manual dry run: `sudo DRY_RUN=1 k3s-clean-dead-pods` |
 | `k3s-after-docker.conf` | `/etc/systemd/system/k3s.service.d/10-after-docker.conf` | start k3s after Docker, so the `localhost:5000` registry is up for image pulls |
 
 Apply after changing any of them:
