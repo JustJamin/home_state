@@ -9,6 +9,8 @@ import { Rpc } from "./static/rpc.js";
 import { MemoryStore, addRecord, fleet } from "./static/store.js";
 import { Sync } from "./static/sync.js";
 import { deploy } from "./static/deploy.js";
+import * as B from "./static/builder.js";
+import { buildFleetView, derivedBleAddress, seenState } from "./static/fleetview.js";
 
 const methods = JSON.parse(readFileSync(new URL("../../firmware/config/methods.json", import.meta.url)));
 const vectors = JSON.parse(readFileSync(new URL("./tests/script_vectors.json", import.meta.url)));
@@ -218,6 +220,88 @@ function fakeServer() {
   assert.equal(f[0].device_id, "58e6c513033c");
   assert.equal(f[0].latest.profile_name, "fast-blink");
   ok("sync: offline queue, push on reconnect, rejection kept, second phone pulls fleet");
+}
+
+// ---------- builder.js ----------
+{
+  const callable = B.callableMethods(methods).map(m => m.name);
+  assert.ok(callable.includes("config.set") && !callable.includes("board.set_id") && !callable.includes("device.info"));
+  const def = JSON.parse(readFileSync(new URL("../../firmware/config/default.json", import.meta.url)));
+  let s = { calls: def.calls };
+  // a fresh config.set call is filled from the schema defaults and equals the shipped default
+  assert.deepEqual(B.newCall(methods, "config.set"), def.calls[0]);
+  const fields = B.fieldsFor(methods.methods["config.set"].params, s.calls[0].params);
+  const led = fields.find(f => f.key === "led");
+  assert.equal(led.kind, "object");
+  assert.deepEqual(led.children.map(f => [f.key, f.kind, f.value]), [["mode", "enum", "blink"], ["blink_hz", "range", 1]]);
+  assert.equal(fields.find(f => f.key === "update_interval_ms").kind, "range");
+  assert.equal(B.stepFor({ type: "number", minimum: 0.1, maximum: 10 }), 0.1);
+  assert.equal(B.stepFor({ type: "integer", minimum: 1, maximum: 300 }), 1);
+
+  s = B.setParam(s, 0, ["led", "blink_hz"], 4);
+  s = B.unsetParam(s, 0, ["adv_interval_ms"]);
+  assert.deepEqual(s.calls[0].params, { update_interval_ms: 5000, led: { mode: "blink", blink_hz: 4 } });
+  s = B.unsetParam(B.unsetParam(s, 0, ["led", "mode"]), 0, ["led", "blink_hz"]);
+  assert.ok(!("led" in s.calls[0].params), "empty parent object dropped");
+  s = B.addCall(s, B.newCall(methods, "device.identify"));
+  s = B.addCall(s, B.newCall(methods, "device.reboot"));
+  assert.deepEqual(s.calls.map(c => c.method), ["config.set", "device.identify", "device.reboot"]);
+  assert.deepEqual(s.calls[1].params, { seconds: 10 });
+  assert.deepEqual(s.calls[2], { method: "device.reboot" });
+  s = B.moveCall(s, 2, -1);
+  assert.deepEqual(s.calls.map(c => c.method), ["config.set", "device.reboot", "device.identify"]);
+  assert.equal(B.moveCall(s, 0, -1), s, "can't move past the top");
+  s = B.removeCall(s, 1);
+  assert.deepEqual(s.calls.map(c => c.method), ["config.set", "device.identify"]);
+  assert.deepEqual(validateScript(s, methods), [], "builder output is a valid script");
+  assert.ok(s.calls.every(c => B.representable(c, methods)));
+  assert.equal(B.representable({ method: "config.set", params: { colour: "red" } }, methods), false);
+  assert.equal(B.representable({ method: "led.party" }, methods), false);
+  ok("builder.js: schema fields, defaults, set/unset, add/move/remove, valid output");
+}
+
+// ---------- fleetview.js ----------
+{
+  assert.equal(derivedBleAddress("58e6c513033c"), "58:E6:C5:13:03:3E");
+  assert.equal(derivedBleAddress("58e6c5195088"), "58:E6:C5:19:50:8A");
+  assert.equal(derivedBleAddress("0000000000ff"), "00:00:00:00:01:01");
+  const t0 = Date.now();
+  assert.equal(seenState(new Date(t0 - 5000).toISOString(), t0), "ok");
+  assert.equal(seenState(new Date(t0 - 120000).toISOString(), t0), "stale");
+  assert.equal(seenState(null, t0), "lost");
+
+  const iso = s => new Date(t0 - s * 1000).toISOString();
+  const pA = { id: "pa", name: "fast-blink", rf_stack: "v2", config_name: "fast" };
+  const pB = { id: "pb", name: "beacon", rf_stack: "v1", config_name: "default" };
+  const dep = (device, profile, ok, ago, extra = {}) => ({
+    device_id: device, profile_id: profile.id, profile_name: profile.name, app: "hs_advertiser", version: "v1.3.0",
+    ok, finished_at: iso(ago), board_id: 1, ...extra });
+  const store = new MemoryStore();
+  for (const d of [
+    dep("58e6c513033c", pA, true, 300),                                   // hs-01: fast-blink (no ble_address: derived)
+    dep("58e6c513033c", pB, false, 100),                                  // ...a later failed deploy doesn't move it
+    dep("58e6c5195088", pB, true, 50, { board_id: 2, ble_address: "58:E6:C5:19:50:8A" }),
+    dep("aaaaaaaaaaaa", pA, true, 60, { board_id: 3 }),
+  ]) await store.put("deployments", { id: crypto.randomUUID(), ...d });
+  const metrics = [
+    { address: "58:E6:C5:13:03:3E", board_id: 1, last_seen: iso(3), rssi_last: -55, capture_pct: 99.5, missed: 2 },
+    { address: "58:E6:C5:19:50:8A", board_id: 2, last_seen: iso(2), rssi_last: -50, capture_pct: 100, missed: 0 },
+    { address: "11:22:33:44:55:66", board_id: 5, last_seen: iso(10), rssi_last: -70, capture_pct: 80, missed: 9 },
+  ];
+  const v = buildFleetView(await fleet(store), metrics, [pA, pB]);
+  assert.deepEqual(v.groups.map(g => g.name), ["beacon", "fast-blink"], "groups sorted by profile name");
+  const fast = v.groups.find(g => g.name === "fast-blink");
+  assert.equal(fast.rf_stack, "v2");
+  assert.deepEqual(fast.devices.map(d => d.board_id), [1, 3], "devices sorted by board ID");
+  const hs01 = fast.devices[0];
+  assert.equal(hs01.device_id, "58e6c513033c");
+  assert.equal(hs01.latest.ok, false, "latest attempt shown...");
+  assert.equal(hs01.current.profile_name, "fast-blink", "...but it stays in its last good profile");
+  assert.equal(hs01.metrics.rssi_last, -55, "metrics joined via derived BLE address");
+  assert.equal(v.groups[0].devices[0].metrics.capture_pct, 100, "metrics joined via recorded ble_address");
+  assert.equal(fast.devices[1].metrics, null, "no readings for a device the scanner hasn't heard");
+  assert.deepEqual(v.unprovisioned.map(m => m.address), ["11:22:33:44:55:66"]);
+  ok("fleetview.js: grouping, last-good profile, metrics join, unprovisioned");
 }
 
 console.log(`\n${passed} test groups passed`);

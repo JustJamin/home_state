@@ -38,9 +38,10 @@ export class Node {
     this.waiters = [];
   }
 
-  static async choose() {
+  /** Show Chrome's device chooser. filters: e.g. [{name: "hs-02"}] to offer only that node. */
+  static async choose(filters = [{ namePrefix: "hs-" }]) {
     const device = await navigator.bluetooth.requestDevice({
-      filters: [{ namePrefix: "hs-" }],
+      filters,
       optionalServices: [SVC],
     });
     const node = new Node(device);
