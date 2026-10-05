@@ -1,4 +1,4 @@
-#!/bin/sh
+#!/bin/bash
 # Build firmware and publish it to the provisioning dashboard.
 #
 #   firmware/release.sh          release: HEAD must be tagged (vX.Y.Z) and the tree clean
@@ -24,7 +24,12 @@ else
     fi
 fi
 
-. "${IDF_PATH:-$HOME/esp/esp-idf}/export.sh" >/dev/null
+# export.sh can't find itself when sourced from a script, so point it at IDF explicitly
+export IDF_PATH=${IDF_PATH:-$HOME/esp/esp-idf}
+if ! . "$IDF_PATH/export.sh" >/dev/null; then
+    echo "failed to load ESP-IDF from $IDF_PATH" >&2
+    exit 1
+fi
 idf.py build
 
 built=$(python3 -c "import sys; d=open(sys.argv[1],'rb').read(); print(d[48:80].split(b'\0')[0].decode())" build/hs_advertiser.bin)
