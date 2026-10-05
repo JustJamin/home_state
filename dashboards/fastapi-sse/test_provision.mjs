@@ -116,6 +116,7 @@ function harness(node, opts = {}) {
   assert.equal(rec.ok, true);
   assert.equal(rec.flashed, false);
   assert.equal(node.dev.settings.led.blink_hz, 4);
+  assert.equal(rec.from_app, null, "no app switch -> from_app not set");
   assert.equal((await h.store.all("deployments")).length, 1);
   assert.equal((await h.store.outboxList()).length, 1);
   ok("deploy: same version -> config only, recorded + queued");

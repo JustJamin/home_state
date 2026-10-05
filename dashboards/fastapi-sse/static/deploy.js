@@ -47,12 +47,12 @@ export async function deploy({
     progress({ step: "identify" });
     let who = await identify();
     rec.from_version = who.version;
-    rec.from_app = who.app;
     rec.device_id = who.device_id;
     rec.board_id = who.board_id;
     rec.ble_address = who.ble_address;
     log(`node: ${who.app} ${who.version}${who.device_id ? `, device ${who.device_id}` : ""}, board ${who.board_id}`);
     const switching = who.app !== profile.app;
+    rec.from_app = switching ? who.app : null; // only recorded when the deploy changes the node's app
     if (switching && !who.family) {
       throw new DeployError(`node runs ${who.app} ${who.version}, which can't switch apps: deploy an hs_advertiser v1.3.1+ profile to it first`);
     }
