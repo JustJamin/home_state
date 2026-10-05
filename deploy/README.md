@@ -80,3 +80,17 @@ kubectl apply -k deploy
 
 - They connect as the `dashboards` role (`SELECT` on `readings` only). The NetworkPolicy lets pods labelled `role: dashboard` reach Postgres.
 - Each runs as `nobody` with a read-only root filesystem and an `emptyDir` on `/tmp`.
+
+### Provisioning store (v1.2.0)
+
+The provisioning app's configs, profiles and fleet history live in schema `provisioning`, written through role `provisioning`. That role can only SELECT and INSERT, so records are immutable.
+
+```sh
+kubectl -n home-state create secret generic provisioning --from-literal=db-password="$(openssl rand -hex 24)"
+# only if the Postgres volume already existed (initdb/004_provisioning.sh runs by itself on a fresh one)
+kubectl -n home-state exec -i postgres-0 -- env POSTGRES_USER=home_state POSTGRES_DB=home_state \
+  PROVISIONING_DB_PASSWORD="$(kubectl -n home-state get secret provisioning -o jsonpath='{.data.db-password}' | base64 -d)" \
+  sh -s < deploy/initdb/004_provisioning.sh
+```
+
+`dash-fastapi-sse` gets `PROVISIONING_DATABASE_URL`. If it's unset, `/api/sync` and `/api/fleet` return 503 and the phone stays offline-only.

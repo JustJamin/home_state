@@ -1,5 +1,6 @@
 // home_state BLE OTA client, protocol v1 (docs/ota-protocol.md). Same protocol as tools/ota_client.py.
 // Needs Web Bluetooth: Chrome on Android over HTTPS.
+import { Rpc, RPC_UUID } from "./rpc.js";
 
 const uuid = i => `2727b0${i.toString(16).padStart(2, "0")}-1ada-46ff-8cde-9e8f32a32c1a`;
 export const SVC = uuid(0), INFO = uuid(1), CTRL = uuid(2), DATA = uuid(3);
@@ -55,6 +56,15 @@ export class Node {
     this.data = await svc.getCharacteristic(DATA);
     this.ctrl.addEventListener("characteristicvaluechanged", e => this.onReply(new Uint8Array(e.target.value.buffer)));
     await this.ctrl.startNotifications();
+    // JSON-RPC (firmware v1.2.0+); older nodes only do OTA
+    this.rpc = null;
+    try {
+      const char = await svc.getCharacteristic(RPC_UUID);
+      const info = await this.readInfo();
+      this.rpc = await new Rpc(char, info.mtu || 23).start();
+    } catch (e) {
+      if (e.name !== "NotFoundError") throw e;
+    }
   }
 
   get connected() { return this.device.gatt.connected; }

@@ -1,6 +1,7 @@
 /*
  * home_state transmitter: broadcasts readings in BLE legacy advertising packets,
- * and accepts firmware updates over BLE (ota.c).
+ * accepts firmware updates over BLE (ota.c), and answers JSON-RPC over USB
+ * serial and BLE (rpc.c). Settings come from settings.c.
  * Payload format (manufacturer-specific data) is documented in the repo README.
  */
 #include <math.h>
@@ -10,6 +11,7 @@
 
 #include "driver/temperature_sensor.h"
 #include "esp_log.h"
+#include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
@@ -20,6 +22,7 @@
 #include "nvs_flash.h"
 #include "services/gap/ble_svc_gap.h"
 
+#include "hs.h"
 #include "ota.h"
 
 #define HS_COMPANY_ID      0xFFFF
@@ -27,8 +30,6 @@
 #define HS_MFG_LEN         10
 /* temp_c_x100 value meaning "no reading" */
 #define HS_TEMP_NONE       INT16_MIN
-/* 1600 * 0.625 ms = 1 s */
-#define HS_ADV_ITVL        1600
 
 static const char *TAG = "hs";
 
@@ -40,6 +41,8 @@ static uint16_t s_counter;
 static temperature_sensor_handle_t s_tsens;
 static uint16_t s_conn = BLE_HS_CONN_HANDLE_NONE;
 static SemaphoreHandle_t s_adv_lock;
+static bool s_adv_ready; /* host synced: safe to (re)start advertising */
+static esp_timer_handle_t s_restart_timer;
 
 static void put_u16_le(uint8_t *p, uint16_t v)
 {
@@ -48,15 +51,46 @@ static void put_u16_le(uint8_t *p, uint16_t v)
 }
 
 /* Chip die temperature: reads several degrees above ambient (self-heating). */
-static int16_t read_temp_c_x100(void)
+float hs_temp_c(void)
 {
     float temp_c;
     esp_err_t err = temperature_sensor_get_celsius(s_tsens, &temp_c);
     if (err != ESP_OK) {
         ESP_LOGW(TAG, "temperature read failed: %s", esp_err_to_name(err));
-        return HS_TEMP_NONE;
+        return NAN;
     }
-    return (int16_t)lroundf(temp_c * 100);
+    return temp_c;
+}
+
+static int16_t read_temp_c_x100(void)
+{
+    float t = hs_temp_c();
+    return isnan(t) ? HS_TEMP_NONE : (int16_t)lroundf(t * 100);
+}
+
+uint8_t hs_board_id(void)
+{
+    return s_board_id;
+}
+
+uint16_t hs_counter(void)
+{
+    return s_counter;
+}
+
+bool hs_connected(void)
+{
+    return s_conn != BLE_HS_CONN_HANDLE_NONE;
+}
+
+static void restart_cb(void *arg)
+{
+    esp_restart();
+}
+
+void hs_restart_after(uint32_t ms)
+{
+    esp_timer_start_once(s_restart_timer, (uint64_t)ms * 1000);
 }
 
 static void build_payload(void)
@@ -92,6 +126,39 @@ static uint8_t load_board_id(void)
     return id;
 }
 
+static int adv_restart(void);
+
+bool hs_set_board_id(uint8_t id)
+{
+    nvs_handle_t h;
+    if (nvs_open("hs", NVS_READWRITE, &h) != ESP_OK) {
+        return false;
+    }
+    bool ok = nvs_set_u8(h, "board_id", id) == ESP_OK && nvs_commit(h) == ESP_OK;
+    nvs_close(h);
+    if (!ok) {
+        return false;
+    }
+    s_board_id = id;
+    snprintf(s_name, sizeof(s_name), "hs-%02u", id);
+    ble_svc_gap_device_name_set(s_name);
+    build_payload();
+    if (s_adv_ready) {
+        adv_restart();
+    }
+    ESP_LOGI(TAG, "board ID set to %u (%s)", id, s_name);
+    return true;
+}
+
+void hs_settings_changed(void)
+{
+    /* advert interval applies on the next restart; do it now. update_interval_ms
+     * and the LED settings are read live by their tasks. */
+    if (s_adv_ready) {
+        adv_restart();
+    }
+}
+
 static int gap_event(struct ble_gap_event *event, void *arg);
 
 /* Restart advertising with the current payload. Connectable while nobody is
@@ -111,11 +178,13 @@ static int adv_restart(void)
     fields.mfg_data = s_mfg;
     fields.mfg_data_len = sizeof(s_mfg);
 
+    /* advertising interval is in 0.625 ms units */
+    uint16_t itvl = (uint16_t)(settings_get()->adv_interval_ms * 8 / 5);
     struct ble_gap_adv_params params = {
         .conn_mode = connected ? BLE_GAP_CONN_MODE_NON : BLE_GAP_CONN_MODE_UND,
         .disc_mode = BLE_GAP_DISC_MODE_GEN,
-        .itvl_min = HS_ADV_ITVL,
-        .itvl_max = HS_ADV_ITVL,
+        .itvl_min = itvl,
+        .itvl_max = itvl,
     };
 
     ble_gap_adv_stop();
@@ -141,7 +210,7 @@ static void log_payload(void)
 static void update_task(void *arg)
 {
     for (;;) {
-        vTaskDelay(pdMS_TO_TICKS(CONFIG_HS_UPDATE_INTERVAL_MS));
+        vTaskDelay(pdMS_TO_TICKS(settings_get()->update_interval_ms));
 
         s_counter++;
         build_payload();
@@ -211,6 +280,7 @@ static void on_sync(void)
     }
 
     build_payload();
+    s_adv_ready = true;
     rc = adv_restart();
     if (rc != 0) {
         ESP_LOGE(TAG, "advertising start failed: rc=%d", rc);
@@ -247,9 +317,13 @@ void app_main(void)
     abort();
 #endif
 
+    const esp_timer_create_args_t restart = {.callback = restart_cb, .name = "hs_restart"};
+    ESP_ERROR_CHECK(esp_timer_create(&restart, &s_restart_timer));
+    settings_load();
     s_board_id = load_board_id();
     snprintf(s_name, sizeof(s_name), "hs-%02u", s_board_id);
     s_adv_lock = xSemaphoreCreateMutex();
+    led_init();
 
     /* -10..80 C is the range with the best accuracy on the C6 */
     temperature_sensor_config_t tsens_cfg = TEMPERATURE_SENSOR_CONFIG_DEFAULT(-10, 80);
@@ -264,4 +338,5 @@ void app_main(void)
     ESP_ERROR_CHECK(ble_svc_gap_device_name_set(s_name) == 0 ? ESP_OK : ESP_FAIL);
 
     nimble_port_freertos_init(host_task);
+    rpc_usb_start();
 }

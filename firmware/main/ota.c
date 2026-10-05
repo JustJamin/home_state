@@ -4,6 +4,7 @@
  * INFO (read)            JSON: firmware version, board, partition, rollback state
  * CTRL (write + notify)  BEGIN / SYNC / END / APPLY / ABORT; replies (and fatal NAKs) as notifications
  * DATA (write [no rsp])  [u32 offset LE][image bytes]
+ * RPC  (write + notify)  JSON-RPC 2.0, framed [u8 flags][bytes]: 0x02 START, 0x01 FINAL (docs/jsonrpc.md)
  *
  * No authentication: any client in range can flash a valid hs_advertiser
  * image (accepted risk for now). Rollback protects against images that
@@ -19,10 +20,15 @@
 #include "esp_ota_ops.h"
 #include "esp_system.h"
 #include "esp_timer.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/queue.h"
+#include "freertos/task.h"
 #include "host/ble_hs.h"
 #include "psa/crypto.h"
 #include "services/gap/ble_svc_gap.h"
 #include "services/gatt/ble_svc_gatt.h"
+
+#include "hs.h"
 
 static const char *TAG = "ota";
 
@@ -48,13 +54,25 @@ static const ble_uuid128_t SVC_UUID = HS_UUID(0x00);
 static const ble_uuid128_t INFO_UUID = HS_UUID(0x01);
 static const ble_uuid128_t CTRL_UUID = HS_UUID(0x02);
 static const ble_uuid128_t DATA_UUID = HS_UUID(0x03);
+static const ble_uuid128_t RPC_UUID = HS_UUID(0x04);
+
+#define RPC_MAX      4096
+#define RPC_F_FINAL  0x01
+#define RPC_F_START  0x02
 
 static enum { XFER_IDLE, XFER_RECEIVING, XFER_RECEIVED } s_xfer;
 static const char *const XFER_NAMES[] = {"idle", "receiving", "received"};
 
 static uint16_t s_conn = BLE_HS_CONN_HANDLE_NONE;
-static uint16_t s_info_handle, s_ctrl_handle, s_data_handle;
-static bool s_ctrl_subscribed;
+static uint16_t s_info_handle, s_ctrl_handle, s_data_handle, s_rpc_handle;
+static bool s_ctrl_subscribed, s_rpc_subscribed;
+
+/* BLE JSON-RPC: requests are reassembled here, then run on rpc_ble_task */
+typedef struct { char *buf; size_t len; } rpc_msg_t;
+static char s_rpc_buf[RPC_MAX];
+static size_t s_rpc_len;
+static bool s_rpc_overflow;
+static QueueHandle_t s_rpc_queue;
 static uint8_t s_board_id;
 
 static const esp_partition_t *s_target;
@@ -313,6 +331,130 @@ static void on_data_write(const uint8_t *p, uint16_t len)
     s_received += n;
 }
 
+/* ---- JSON-RPC over BLE ---- */
+
+static void on_rpc_write(const uint8_t *p, uint16_t len)
+{
+    if (len < 1) {
+        return;
+    }
+    uint8_t flags = p[0];
+    if (flags & RPC_F_START) {
+        s_rpc_len = 0;
+        s_rpc_overflow = false;
+    }
+    if (s_rpc_len + (len - 1) > RPC_MAX) {
+        s_rpc_overflow = true;
+    } else {
+        memcpy(&s_rpc_buf[s_rpc_len], p + 1, len - 1);
+        s_rpc_len += len - 1;
+    }
+    if (!(flags & RPC_F_FINAL)) {
+        return;
+    }
+    rpc_msg_t msg = {0};
+    if (s_rpc_overflow) {
+        static const char TOO_LONG[] =
+            "{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32600,\"message\":\"request too long\"},\"id\":null}";
+        msg.buf = strdup(TOO_LONG);
+        msg.len = SIZE_MAX; /* already a response */
+    } else {
+        msg.buf = malloc(s_rpc_len);
+        memcpy(msg.buf, s_rpc_buf, s_rpc_len);
+        msg.len = s_rpc_len;
+    }
+    s_rpc_len = 0;
+    if (!msg.buf || xQueueSend(s_rpc_queue, &msg, 0) != pdTRUE) {
+        ESP_LOGW(TAG, "RPC request dropped (queue full)");
+        free(msg.buf);
+    }
+}
+
+/* Send a response as notifications of at most MTU-3 bytes, retrying while NimBLE is out of buffers. */
+static void rpc_send(const char *resp, size_t len)
+{
+    uint16_t conn = s_conn;
+    if (conn == BLE_HS_CONN_HANDLE_NONE || !s_rpc_subscribed) {
+        ESP_LOGW(TAG, "RPC response dropped: client not subscribed");
+        return;
+    }
+    size_t frag = ble_att_mtu(conn) - 3 - 1;
+    uint8_t buf[512];
+    if (frag > sizeof(buf) - 1) {
+        frag = sizeof(buf) - 1;
+    }
+    for (size_t off = 0; off < len || (off == 0 && len == 0);) {
+        size_t n = len - off < frag ? len - off : frag;
+        buf[0] = (off == 0 ? RPC_F_START : 0) | (off + n == len ? RPC_F_FINAL : 0);
+        memcpy(&buf[1], resp + off, n);
+        int rc;
+        for (int tries = 0; tries < 100; tries++) {
+            if (s_conn != conn) {
+                return; /* disconnected */
+            }
+            rc = ble_gatts_notify_custom(conn, s_rpc_handle, ble_hs_mbuf_from_flat(buf, n + 1));
+            if (rc != BLE_HS_ENOMEM) {
+                break;
+            }
+            vTaskDelay(pdMS_TO_TICKS(10));
+        }
+        if (rc != 0) {
+            ESP_LOGW(TAG, "RPC notify failed: rc=%d", rc);
+            return;
+        }
+        off += n;
+        if (len == 0) {
+            break;
+        }
+    }
+}
+
+static void rpc_ble_task(void *arg)
+{
+    rpc_msg_t msg;
+    for (;;) {
+        if (xQueueReceive(s_rpc_queue, &msg, portMAX_DELAY) != pdTRUE) {
+            continue;
+        }
+        if (msg.len == SIZE_MAX) {
+            rpc_send(msg.buf, strlen(msg.buf));
+        } else {
+            char *resp = rpc_handle(msg.buf, msg.len);
+            if (resp) {
+                rpc_send(resp, strlen(resp));
+                cJSON_free(resp);
+            }
+        }
+        free(msg.buf);
+    }
+}
+
+/* ---- info for device.info / ota.status ---- */
+
+void ota_add_info(cJSON *obj)
+{
+    const esp_partition_t *run = esp_ota_get_running_partition();
+    cJSON_AddStringToObject(obj, "partition", run ? run->label : "?");
+    cJSON_AddStringToObject(obj, "state", s_pending_verify ? "pending" : "valid");
+    if (s_rolled_back_from[0]) {
+        cJSON_AddStringToObject(obj, "rolled_back_from", s_rolled_back_from);
+    } else {
+        cJSON_AddNullToObject(obj, "rolled_back_from");
+    }
+}
+
+cJSON *ota_status_json(void)
+{
+    cJSON *r = cJSON_CreateObject();
+    cJSON_AddStringToObject(r, "transfer", XFER_NAMES[s_xfer]);
+    cJSON_AddNumberToObject(r, "received", s_received);
+    cJSON_AddNumberToObject(r, "size", s_size);
+    const esp_partition_t *next = esp_ota_get_next_update_partition(NULL);
+    cJSON_AddStringToObject(r, "next_partition", next ? next->label : "?");
+    ota_add_info(r);
+    return r;
+}
+
 static int info_json(char *buf, size_t size)
 {
     const esp_app_desc_t *app = esp_app_get_description();
@@ -348,6 +490,8 @@ static int access_cb(uint16_t conn_handle, uint16_t attr_handle, struct ble_gatt
             on_ctrl_write(buf, len);
         } else if (attr_handle == s_data_handle) {
             on_data_write(buf, len);
+        } else if (attr_handle == s_rpc_handle) {
+            on_rpc_write(buf, len);
         }
         return 0;
     }
@@ -365,6 +509,8 @@ static const struct ble_gatt_svc_def s_services[] = {
              .flags = BLE_GATT_CHR_F_WRITE | BLE_GATT_CHR_F_NOTIFY, .val_handle = &s_ctrl_handle},
             {.uuid = &DATA_UUID.u, .access_cb = access_cb,
              .flags = BLE_GATT_CHR_F_WRITE_NO_RSP | BLE_GATT_CHR_F_WRITE, .val_handle = &s_data_handle},
+            {.uuid = &RPC_UUID.u, .access_cb = access_cb,
+             .flags = BLE_GATT_CHR_F_WRITE | BLE_GATT_CHR_F_NOTIFY, .val_handle = &s_rpc_handle},
             {0},
         },
     },
@@ -449,6 +595,8 @@ int ota_gatt_init(uint8_t board_id)
         ESP_LOGE(TAG, "psa_crypto_init failed");
         return -1;
     }
+    s_rpc_queue = xQueueCreate(4, sizeof(rpc_msg_t));
+    xTaskCreate(rpc_ble_task, "rpc_ble", 6144, NULL, 4, NULL);
     ble_svc_gap_init();
     ble_svc_gatt_init();
     int rc = ble_gatts_count_cfg(s_services);
@@ -461,7 +609,8 @@ int ota_gatt_init(uint8_t board_id)
 void ota_on_connect(uint16_t conn_handle)
 {
     s_conn = conn_handle;
-    s_ctrl_subscribed = false;
+    s_ctrl_subscribed = s_rpc_subscribed = false;
+    s_rpc_len = 0;
     esp_timer_start_once(s_idle_timer, IDLE_TIMEOUT_US);
 
     /* ask for a fast link; all best-effort (the central decides) */
@@ -480,7 +629,8 @@ void ota_on_disconnect(void)
 {
     reset_transfer("disconnected");
     s_conn = BLE_HS_CONN_HANDLE_NONE;
-    s_ctrl_subscribed = false;
+    s_ctrl_subscribed = s_rpc_subscribed = false;
+    s_rpc_len = 0;
     esp_timer_stop(s_idle_timer);
 }
 
@@ -488,5 +638,7 @@ void ota_on_subscribe(uint16_t attr_handle, bool notify)
 {
     if (attr_handle == s_ctrl_handle) {
         s_ctrl_subscribed = notify;
+    } else if (attr_handle == s_rpc_handle) {
+        s_rpc_subscribed = notify;
     }
 }

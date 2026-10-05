@@ -46,10 +46,13 @@ All of them hide the dummy temperatures from before 2026-10-04 20:30:52 UTC. Str
 - About 150 lines of vanilla JS: uPlot charts (drag to zoom, double-click to reset), new table rows flash as they arrive, a connection-status dot, and light/dark colours from `prefers-color-scheme`.
 - uPlot is vendored in `static/vendor/` (v1.6.32, MIT), so no CDN is needed.
 - *Good for:* the smallest footprint and full control, and it's the easiest to embed anywhere. *Trade-off:* you write everything yourself.
-- **Provisioning (v1.1.0):** `/provision` uploads firmware to a node over **Web Bluetooth**. Use Chrome on Android over HTTPS (https://lenovo.tailc2dfa5.ts.net/provision, via `tailscale serve`).
-  - Pick a release (from `/api/firmware`) or a local `.bin`, choose the node in Chrome's device chooser, and flash. The page shows progress with KB/s, holds a screen wake lock, and verifies the new version after the node reboots.
-  - Protocol: [docs/ota-protocol.md](../docs/ota-protocol.md).
-  - Tests: `pytest test_app.py` (firmware API) and `node test_ota.mjs` (`ota.js` against a simulated node with lost and failing writes).
+- **Provisioning (`/provision`, v1.2.0):** an installable, **offline-capable** web app (PWA) for Chrome on Android over HTTPS: https://lenovo.tailc2dfa5.ts.net/provision.
+  - **Build:** pick App → Version → Config. Each version ships a `default` config; saved ones are listed too. Edit the config's JSON-RPC script with live validation against that version's `methods.json`, then **Save config as…** and **Save as profile…** (app + version + config).
+  - **Deploy:** one tap per profile. It identifies the node (device ID over JSON-RPC), flashes the firmware if the node runs another version, optionally sets a board ID, runs the script (reconnecting after reboots), and records the result.
+  - **Fleet:** the latest deployment per device ID, with history.
+  - **Offline:** configs, profiles and deployments live in the phone's IndexedDB and sync with Postgres (`provisioning` schema) whenever the server is reachable. Records are immutable with client UUIDs, so syncing never conflicts. The service worker keeps the app shell, and Cache Storage keeps the firmware for every profile's version plus the newest version, plus anything marked "keep offline".
+  - API: `/api/apps` (catalogue), `/api/apps/<app>/<version>/{firmware.bin,default.config.json,methods.json}`, `/api/sync` (GET `?since=`, POST batch), `/api/fleet`. Docs: [docs/jsonrpc.md](../docs/jsonrpc.md), [docs/ota-protocol.md](../docs/ota-protocol.md).
+  - Tests: `tests/run.sh` (pytest against a throwaway Postgres: catalogue, validation, sync, fleet, role permissions), `node test_provision.mjs` (validator, RPC framing, deploy runner, offline sync), `node test_ota.mjs` (OTA client).
 
 ## Other options not built here
 
