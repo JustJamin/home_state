@@ -1,0 +1,14 @@
+# Once per boot, after k3s: remove pods left Completed/Error by graceful node shutdown.
+# Installed to /etc/systemd/system/ by deploy/k3s/apply.sh.
+[Unit]
+Description=Delete controller-owned pods left terminated by node shutdown
+After=k3s.service
+Wants=k3s.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/k3s-clean-dead-pods
+TimeoutStartSec=6min
+
+[Install]
+WantedBy=multi-user.target
