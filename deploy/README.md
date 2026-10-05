@@ -94,3 +94,11 @@ kubectl -n home-state exec -i postgres-0 -- env POSTGRES_USER=home_state POSTGRE
 ```
 
 `dash-fastapi-sse` gets `PROVISIONING_DATABASE_URL`. If it's unset, `/api/sync` and `/api/fleet` return 503 and the phone stays offline-only.
+
+#### v1.3.0 migration
+
+`initdb/005_v1_3.sql` adds `rf_stack` to profiles and deployments, and `ble_address` to deployments. It runs by itself on a fresh volume. For the existing database:
+
+```sh
+kubectl -n home-state exec -i postgres-0 -- psql -U home_state -v ON_ERROR_STOP=1 < deploy/initdb/005_v1_3.sql
+```

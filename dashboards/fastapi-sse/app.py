@@ -132,6 +132,39 @@ async def stream(request: Request, last_event_id: int | None = Header(None)) -> 
                              headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 
+@app.get("/api/fleet/metrics")
+async def fleet_metrics(hours: int = Query(24, ge=1, le=720)) -> list[dict]:
+    """Network health per BLE address over the window, from the scanner's readings.
+
+    missed = gaps in a board's counter (adverts nobody stored, including scanner
+    outages); a counter that goes down is a reboot, counted in `resets` instead.
+    """
+    async with pool.connection() as conn:
+        rows = await (await conn.execute("""
+            WITH r AS (
+                SELECT address, board_id, received_at, rssi, uptime_s, temp_c,
+                       counter - lag(counter) OVER (PARTITION BY address ORDER BY id) AS d
+                FROM readings WHERE received_at > now() - make_interval(hours => %s)
+            )
+            SELECT address,
+                   (array_agg(board_id ORDER BY received_at DESC))[1] AS board_id,
+                   max(received_at) AS last_seen,
+                   (array_agg(rssi ORDER BY received_at DESC))[1] AS rssi_last,
+                   round(avg(rssi) FILTER (WHERE received_at > now() - interval '1 hour'))::int AS rssi_avg_1h,
+                   count(*) AS readings,
+                   coalesce(sum(d - 1) FILTER (WHERE d > 1), 0)::int AS missed,
+                   count(*) FILTER (WHERE d < 0) AS resets,
+                   (array_agg(uptime_s ORDER BY received_at DESC))[1] AS uptime_s,
+                   (array_agg(temp_c ORDER BY received_at DESC))[1] AS temp_c
+            FROM r GROUP BY address ORDER BY address""", (hours,))).fetchall()
+    for r in rows:
+        total = r["readings"] + r["missed"]
+        r["capture_pct"] = round(100 * r["readings"] / total, 2) if total else None
+        r["last_seen"] = r["last_seen"].isoformat()
+        r["window_hours"] = hours
+    return rows
+
+
 @app.get("/api/stats")
 async def stats() -> dict:
     return {"browsers_connected": len(broadcaster.subscribers), "last_id": broadcaster.last_id}

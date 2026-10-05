@@ -1,0 +1,13 @@
+{
+  "name": "home-state-provision-tests",
+  "private": true,
+  "description": "Test-only dependencies for the provisioning web app (no build step; the app itself has no npm deps).",
+  "type": "module",
+  "scripts": {
+    "test": "node test_provision.mjs && node test_ota.mjs ../../firmware/build/hs_advertiser.bin && node tests/ui_smoke.mjs"
+  },
+  "devDependencies": {
+    "fake-indexeddb": "6.2.5",
+    "jsdom": "30.1.2"
+  }
+}

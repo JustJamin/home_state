@@ -1,0 +1,46 @@
+/* Lacuna Space colour scheme, shared by the dashboard (index.html) and the provisioning app.
+   The brand is dark, so the same palette is used whatever the system light/dark setting. */
+:root {
+  --lacuna-indigo: #1E1554;
+  --lacuna-mint: #88DFC3;
+  --lacuna-purple: #6A35BE;
+  --lacuna-purple-bright: #7B3FC4;
+  --lacuna-black: #000000;
+  --lacuna-ink: #0B0B1A;
+  --lacuna-white: #FFFFFF;
+
+  --bg-dark: var(--lacuna-indigo);
+  --bg-accent: var(--lacuna-mint);
+  --text-on-dark: var(--lacuna-white);
+  --text-on-accent: var(--lacuna-indigo);
+  --border-accent: var(--lacuna-purple);
+
+  /* semantic tokens the pages use */
+  --bg: var(--bg-dark);
+  --card: color-mix(in srgb, var(--lacuna-ink) 55%, var(--lacuna-indigo));
+  --field: color-mix(in srgb, var(--lacuna-ink) 75%, var(--lacuna-indigo));
+  --fg: var(--text-on-dark);
+  --muted: color-mix(in srgb, var(--lacuna-white) 66%, var(--lacuna-indigo));
+  --line: color-mix(in srgb, var(--border-accent) 70%, var(--lacuna-indigo));
+  --accent: var(--bg-accent);
+  --on-accent: var(--text-on-accent);
+  --hover: var(--lacuna-purple-bright);
+  /* status colours: distinct from mint, readable on indigo */
+  --ok: #5BE38F;
+  --warn: #FFC857;
+  --bad: #FF6B81;
+  --flash: color-mix(in srgb, var(--lacuna-mint) 22%, transparent);
+  color-scheme: dark;
+}
+
+body { background: var(--bg); color: var(--fg); }
+a { color: var(--accent); }
+button { background: var(--accent); color: var(--on-accent); }
+button:not(:disabled):hover { background: var(--hover); color: var(--text-on-dark); }
+button.secondary, button.danger { background: transparent; border: 1px solid var(--line); }
+button.secondary { color: var(--accent); }
+button.danger { color: var(--bad); }
+button.secondary:not(:disabled):hover, button.danger:not(:disabled):hover { background: color-mix(in srgb, var(--hover) 30%, transparent); }
+select, input[type=text], input[type=number], textarea { background: var(--field); color: var(--fg); border-color: var(--line); }
+input[type=range], input[type=checkbox] { accent-color: var(--accent); }
+::selection { background: var(--lacuna-purple); color: var(--lacuna-white); }

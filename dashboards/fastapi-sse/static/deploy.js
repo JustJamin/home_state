@@ -21,6 +21,7 @@ export async function deploy({
   const rec = {
     id: crypto.randomUUID(), device_id: null, board_id: null, profile_id: profile.id, profile_name: profile.name,
     app: profile.app, version: profile.version, from_version: null, flashed: false,
+    rf_stack: profile.rf_stack ?? null, ble_address: null,
     script: profile.script, results: [], ok: false, error: null, started_at: now(), finished_at: null, client,
   };
   const methods = await catalogue.json(profile.app, profile.version, "methods.json");
@@ -28,10 +29,10 @@ export async function deploy({
   async function identify() {
     if (node.rpc) {
       const i = await node.rpc.call("device.info");
-      return { app: i.app, version: i.version, device_id: i.device_id, board_id: i.board_id };
+      return { app: i.app, version: i.version, device_id: i.device_id, board_id: i.board_id, ble_address: i.ble_address ?? null };
     }
     const i = await node.readInfo(); // pre-RPC firmware: no device ID
-    return { app: i.proj, version: i.fw, device_id: null, board_id: i.board };
+    return { app: i.proj, version: i.fw, device_id: null, board_id: i.board, ble_address: null };
   }
 
   async function reconnect(why) {
@@ -46,6 +47,7 @@ export async function deploy({
     rec.from_version = who.version;
     rec.device_id = who.device_id;
     rec.board_id = who.board_id;
+    rec.ble_address = who.ble_address;
     log(`node: ${who.app} ${who.version}${who.device_id ? `, device ${who.device_id}` : ""}, board ${who.board_id}`);
     if (who.app !== profile.app) {
       throw new DeployError(`node runs ${who.app}, but the profile is for ${profile.app}`);
@@ -64,6 +66,7 @@ export async function deploy({
       who = await identify();
       rec.device_id = who.device_id;
       rec.board_id = who.board_id;
+      rec.ble_address = who.ble_address;
     }
 
     if (!node.rpc) throw new DeployError(`${who.version} has no JSON-RPC, so the config can't be applied`);

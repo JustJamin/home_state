@@ -3,76 +3,92 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<meta name="theme-color" content="#3b6fe0">
+<meta name="theme-color" content="#1E1554">
 <title>home_state · Provision</title>
 <link rel="manifest" href="/manifest.webmanifest">
 <link rel="icon" href="/static/icons/icon-192.png">
 <link rel="apple-touch-icon" href="/static/icons/icon-192.png">
+<link rel="stylesheet" href="/static/theme.css">
 <style>
-  :root { --bg: #f7f7f9; --card: #fff; --fg: #1d1d22; --muted: #6b6b76; --line: #e3e3e8;
-          --ok: #1a7f37; --bad: #cf222e; --warn: #9a6700; --accent: #3b6fe0; --mono: ui-monospace, "SF Mono", Menlo, monospace; }
-  @media (prefers-color-scheme: dark) {
-    :root { --bg: #15161a; --card: #1e2026; --fg: #e8e8ec; --muted: #9a9aa6; --line: #2e3038;
-            --ok: #3fb950; --bad: #f85149; --warn: #d29922; --accent: #7aa2ff; }
-  }
+  :root { --mono: ui-monospace, "SF Mono", Menlo, monospace; }
   * { box-sizing: border-box; }
-  body { margin: 0; font: 16px/1.45 system-ui, sans-serif; background: var(--bg); color: var(--fg); }
-  main { max-width: 760px; margin: 0 auto; padding: 0 16px 40px; }
-  header.top { position: sticky; top: 0; z-index: 5; background: var(--bg); padding: 12px 16px 0;
-               max-width: 760px; margin: 0 auto; }
+  body { margin: 0; font: 16px/1.45 system-ui, sans-serif; }
+  main { max-width: 760px; margin: 0 auto; padding: 0 16px 40px; overflow-x: hidden; }
+  header.top { position: sticky; top: 0; z-index: 5; background: var(--bg); padding: 12px 16px 0; max-width: 760px; margin: 0 auto; }
   .titlebar { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
   h1 { margin: 0; font-size: 1.25rem; }
-  a { color: var(--accent); }
   .status { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; font-size: .85rem; color: var(--muted); margin: 6px 0 8px; }
   .pill { padding: 2px 9px; border-radius: 99px; border: 1px solid var(--line); background: var(--card); }
-  .pill.on { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 40%, transparent); }
-  .pill.off { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 40%, transparent); }
-  .pill.pending { color: var(--accent); }
+  .pill.on { color: var(--ok); } .pill.off { color: var(--warn); } .pill.pending { color: var(--accent); }
   nav.tabs { display: flex; border-bottom: 1px solid var(--line); }
-  nav.tabs button { flex: 1; background: none; border: 0; padding: 10px 0; font: inherit; color: var(--muted);
-                    border-bottom: 2px solid transparent; width: auto; margin: 0; border-radius: 0; font-weight: 600; }
+  nav.tabs button { flex: 1; background: none; border: 0; padding: 10px 0; color: var(--muted); border-bottom: 2px solid transparent; border-radius: 0; font-weight: 600; }
+  nav.tabs button:not(:disabled):hover { background: none; color: var(--fg); }
   nav.tabs button.active { color: var(--accent); border-bottom-color: var(--accent); }
   section.card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px; margin: 12px 0; }
   h2 { font-size: 1rem; margin: 0 0 10px; }
+  h3 { font-size: .95rem; margin: 0; }
   label.field { display: block; font-size: .85rem; color: var(--muted); margin: 10px 0 4px; }
-  select, input[type=text], input[type=number] { width: 100%; font: inherit; padding: 9px 10px; border-radius: 8px;
-           border: 1px solid var(--line); background: var(--bg); color: var(--fg); }
-  textarea { width: 100%; min-height: 220px; font: 13px/1.4 var(--mono); padding: 10px; border-radius: 8px;
-             border: 1px solid var(--line); background: var(--bg); color: var(--fg); resize: vertical; }
+  select, input[type=text], input[type=number] { width: 100%; font: inherit; padding: 9px 10px; border-radius: 8px; border: 1px solid var(--line); }
+  textarea { width: 100%; min-height: 220px; font: 13px/1.4 var(--mono); padding: 10px; border-radius: 8px; border: 1px solid var(--line); resize: vertical; }
   textarea.invalid { border-color: var(--bad); }
-  button { font: inherit; padding: 11px 16px; border-radius: 10px; border: 0; background: var(--accent); color: #fff;
-           font-weight: 600; cursor: pointer; }
+  button { font: inherit; padding: 11px 16px; border-radius: 10px; border: 0; font-weight: 600; cursor: pointer; }
   button:disabled { opacity: .45; cursor: default; }
-  button.secondary { background: transparent; color: var(--accent); border: 1px solid var(--line); }
-  button.danger { background: transparent; color: var(--bad); border: 1px solid var(--line); }
   button.small { padding: 6px 10px; font-size: .85rem; }
-  .row { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
-  .row > button { flex: 1; min-width: 140px; }
+  button.icon { padding: 4px 9px; font-size: .9rem; }
+  .row { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; align-items: center; }
+  .row > button.grow { flex: 1; min-width: 140px; }
   .muted { color: var(--muted); font-size: .88rem; }
   .errors { margin: 8px 0 0; padding: 0 0 0 18px; color: var(--bad); font-size: .88rem; }
   .valid { color: var(--ok); font-size: .88rem; margin-top: 8px; }
   details.ref { margin-top: 10px; font-size: .88rem; }
-  details.ref code { font-family: var(--mono); font-size: .82rem; }
-  details.ref li { margin-bottom: 6px; }
-  .profile { border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; margin: 8px 0;
-             display: grid; grid-template-columns: 1fr auto; gap: 4px 10px; align-items: center; }
-  .profile .name { font-weight: 600; }
-  .profile .actions { grid-row: span 2; display: flex; gap: 6px; }
-  .badge { font-size: .75rem; padding: 1px 7px; border-radius: 99px; border: 1px solid var(--line); margin-left: 4px; }
-  .badge.ok { color: var(--ok); } .badge.bad { color: var(--bad); } .badge.warn { color: var(--warn); }
-  progress { width: 100%; height: 16px; margin-top: 10px; }
+  code, .mono { font-family: var(--mono); font-size: .82rem; }
+  .badge { font-size: .75rem; padding: 1px 7px; border-radius: 99px; border: 1px solid var(--line); margin-left: 4px; white-space: nowrap; }
+  .badge.ok { color: var(--ok); } .badge.bad { color: var(--bad); } .badge.warn { color: var(--warn); } .badge.accent { color: var(--accent); }
+  .seg { display: inline-flex; border: 1px solid var(--line); border-radius: 9px; overflow: hidden; }
+  .seg button { background: transparent; color: var(--muted); border-radius: 0; padding: 6px 14px; }
+  .seg button.active { background: var(--accent); color: var(--on-accent); }
+  /* deploy */
+  .detail { border: 1px solid var(--line); border-radius: 10px; padding: 12px; margin-top: 10px; }
+  .detail ol { margin: 6px 0 0; padding-left: 20px; font-size: .88rem; }
+  .detail li, .detail .mono { overflow-wrap: anywhere; } /* long JSON params wrap instead of running off */
+  .target { display: flex; align-items: center; gap: 8px; margin-top: 10px; font-size: .92rem; }
+  progress { width: 100%; height: 16px; margin-top: 10px; accent-color: var(--accent); }
   .result { padding: 10px 12px; border-radius: 8px; margin-top: 10px; display: none; }
   .result.show { display: block; }
-  .result.ok { background: color-mix(in srgb, var(--ok) 14%, transparent); color: var(--ok); }
-  .result.bad { background: color-mix(in srgb, var(--bad) 14%, transparent); color: var(--bad); }
-  .result.warn { background: color-mix(in srgb, var(--warn) 14%, transparent); color: var(--warn); }
+  .result.ok { background: color-mix(in srgb, var(--ok) 16%, transparent); color: var(--ok); }
+  .result.bad { background: color-mix(in srgb, var(--bad) 16%, transparent); color: var(--bad); }
+  .result.warn { background: color-mix(in srgb, var(--warn) 16%, transparent); color: var(--warn); }
   pre.log { font: 12px/1.4 var(--mono); max-height: 220px; overflow: auto; white-space: pre-wrap; margin: 10px 0 0; color: var(--muted); }
-  table { width: 100%; border-collapse: collapse; font-size: .88rem; font-variant-numeric: tabular-nums; }
-  th, td { text-align: left; padding: 7px 6px; border-bottom: 1px solid var(--line); vertical-align: top; }
-  tr.device { cursor: pointer; }
-  td.mono, .mono { font-family: var(--mono); font-size: .8rem; }
   .kv { display: grid; grid-template-columns: max-content 1fr; gap: 2px 12px; font-size: .9rem; }
   .kv dt { color: var(--muted); } .kv dd { margin: 0; word-break: break-all; }
+  /* builder */
+  .call { border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; margin: 10px 0; background: var(--field); }
+  .call-head { display: flex; align-items: center; gap: 6px; }
+  .call-head select { flex: 1; padding: 6px 8px; }
+  .call-head .n { color: var(--muted); font-size: .85rem; min-width: 1.4em; }
+  .fld { margin: 8px 0 0; }
+  .fld-head { display: flex; align-items: center; gap: 8px; font-size: .88rem; }
+  .fld-head label { flex: 1; }
+  .fld-ctl { display: flex; gap: 8px; align-items: center; margin-top: 4px; }
+  .fld-ctl input[type=range] { flex: 1; }
+  .fld-ctl input[type=number] { width: 7.5em; padding: 6px 8px; }
+  .fld-ctl select { padding: 6px 8px; }
+  .fld.off .fld-ctl, .fld.off fieldset { opacity: .4; pointer-events: none; }
+  fieldset { border: 1px solid var(--line); border-radius: 8px; padding: 4px 10px 10px; margin: 8px 0 0; }
+  legend { font-size: .85rem; color: var(--muted); padding: 0 4px; }
+  /* fleet */
+  .group { margin-top: 14px; }
+  .group-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px; padding-bottom: 4px; border-bottom: 1px solid var(--line); }
+  .dev { border-bottom: 1px solid color-mix(in srgb, var(--line) 50%, transparent); }
+  .dev-row { display: grid; grid-template-columns: auto 1fr auto; gap: 2px 10px; padding: 9px 2px; cursor: pointer; align-items: center; }
+  .dev-row .metrics { grid-column: 2 / 4; font-size: .82rem; color: var(--muted); font-variant-numeric: tabular-nums; }
+  .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--bad); grid-row: span 2; }
+  .dot.ok { background: var(--ok); } .dot.stale { background: var(--warn); }
+  .dev-body { padding: 0 2px 12px 22px; min-width: 0; overflow-wrap: anywhere; }
+  .hist { border-left: 2px solid var(--line); padding: 2px 0 2px 10px; margin: 6px 0; font-size: .86rem; overflow-wrap: anywhere; }
+  .hist .badge, .dev-body .badge { white-space: normal; display: inline-block; max-width: 100%; }
+  .chev { color: var(--muted); font-size: .9rem; transition: transform .15s; }
+  .dev.open .chev { transform: rotate(90deg); }
   .hidden { display: none !important; }
 </style>
 </head>
@@ -80,7 +96,7 @@
 <header class="top">
   <div class="titlebar">
     <h1>📡 Provision</h1>
-    <a href="/" id="dash-link">Dashboard ›</a>
+    <a href="/">Dashboard ›</a>
   </div>
   <div class="status">
     <span class="pill" id="st-online">…</span>
@@ -101,10 +117,14 @@
   <!-- ===== Deploy ===== -->
   <div data-panel="deploy">
     <section class="card">
-      <h2>Profiles</h2>
-      <div id="profiles" class="muted">No profiles yet. Make one in Build.</div>
+      <h2>Deploy a profile</h2>
+      <label class="field" for="profile-select">Profile</label>
+      <select id="profile-select"></select>
+      <div id="profile-detail"></div>
+      <div class="target" id="target-line"></div>
       <label class="field" for="board-id">Set board ID on deploy (optional, for a fresh board)</label>
       <input type="number" id="board-id" min="0" max="255" placeholder="keep the node's current ID">
+      <div class="row"><button class="grow" id="deploy-btn" disabled>Deploy</button></div>
     </section>
     <section class="card hidden" id="run-card">
       <h2 id="run-title">Deploying…</h2>
@@ -117,7 +137,7 @@
     <section class="card">
       <h2>Inspect a node</h2>
       <div class="muted">Connect and read a node's identity and settings without changing anything.</div>
-      <div class="row"><button class="secondary" id="inspect">Choose a node…</button></div>
+      <div class="row"><button class="secondary grow" id="inspect">Choose a node…</button></div>
       <dl class="kv" id="inspect-out" style="margin-top:10px"></dl>
     </section>
   </div>
@@ -130,19 +150,30 @@
       <select id="app"></select>
       <label class="field" for="version">Version</label>
       <select id="version"></select>
+      <div id="rf-wrap">
+        <label class="field" for="rf-stack">Radio stack (RF module) version</label>
+        <select id="rf-stack"></select>
+      </div>
       <label class="muted" style="display:block;margin-top:8px"><input type="checkbox" id="keep-offline"> Keep this version on the phone for offline use</label>
       <div class="muted" id="version-info"></div>
     </section>
     <section class="card" id="config-card">
-      <h2>Config</h2>
-      <label class="field" for="config">Config script</label>
+      <div class="row" style="margin-top:0;justify-content:space-between">
+        <h2 style="margin:0">Config</h2>
+        <div class="seg"><button id="mode-form" class="active">Form</button><button id="mode-json">JSON</button></div>
+      </div>
+      <label class="field" for="config">Start from</label>
       <select id="config"></select>
-      <label class="field" for="editor">JSON-RPC calls, run in order on the node</label>
-      <textarea id="editor" spellcheck="false" autocapitalize="off" autocomplete="off"></textarea>
+      <div id="builder"></div>
+      <div id="builder-add" class="row">
+        <select id="add-method" style="flex:1"></select>
+        <button class="secondary small" id="add-call">+ Add call</button>
+      </div>
+      <textarea id="editor" class="hidden" spellcheck="false" autocapitalize="off" autocomplete="off"></textarea>
       <div id="validation"></div>
       <div class="row">
-        <button class="secondary" id="save-config">Save config as…</button>
-        <button id="save-profile">Save as profile…</button>
+        <button class="secondary grow" id="save-config">Save config as…</button>
+        <button class="grow" id="save-profile">Save as profile…</button>
       </div>
       <div class="row"><button class="danger small" id="archive-config">Archive this config</button></div>
       <details class="ref"><summary>Methods for this version</summary><ul id="methods-ref"></ul></details>
@@ -152,13 +183,13 @@
   <!-- ===== Fleet ===== -->
   <div data-panel="fleet" class="hidden">
     <section class="card">
-      <h2>Fleet</h2>
-      <div class="muted">Every device ID that has had a profile deployed, newest first. Tap a row for its history.</div>
-      <table style="margin-top:10px">
-        <thead><tr><th>device</th><th>board</th><th>profile</th><th>result</th><th>when</th></tr></thead>
-        <tbody id="fleet-rows"></tbody>
-      </table>
-      <div id="fleet-history"></div>
+      <div class="row" style="margin-top:0;justify-content:space-between">
+        <h2 style="margin:0">Fleet</h2>
+        <span class="muted" id="metrics-age"></span>
+      </div>
+      <div class="muted">Grouped by the profile each device is running. Tap a device for details and history.</div>
+      <div id="fleet-groups"></div>
+      <div id="unprovisioned"></div>
     </section>
   </div>
 </main>

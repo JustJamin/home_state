@@ -60,6 +60,16 @@ def client(tmp_path_factory):
     shutil.copy(IMAGE, good / "firmware.bin")
     shutil.copy(REPO / "firmware/config/default.json", good / "default.config.json")
     shutil.copy(REPO / "firmware/config/methods.json", good / "methods.json")
+    # an older-style version: valid image (header patched to its own version) without rf_stacks
+    norf = tmp_path / "hs_advertiser" / "v0.0.9-norf"
+    norf.mkdir()
+    patched = bytearray(img)
+    patched[48:80] = b"v0.0.9-norf".ljust(32, b"\0")
+    (norf / "firmware.bin").write_bytes(bytes(patched))
+    shutil.copy(REPO / "firmware/config/default.json", norf / "default.config.json")
+    old_methods = dict(METHODS)
+    old_methods.pop("rf_stacks", None)
+    (norf / "methods.json").write_text(json.dumps(old_methods))
     # a version directory whose image says something else: must be ignored
     wrong = tmp_path / "hs_advertiser" / "v9.9.9"
     wrong.mkdir()
@@ -84,10 +94,11 @@ def test_apps_lists_only_consistent_entries(client):
     c, ver = client
     apps = c.get("/api/apps").json()
     assert [a["app"] for a in apps] == ["hs_advertiser"]
-    versions = apps[0]["versions"]
-    assert [v["version"] for v in versions] == [ver]   # v9.9.9 (mismatched header) skipped
-    assert versions[0]["configurable"] is True
-    assert versions[0]["size"] == IMAGE.stat().st_size
+    versions = [v for v in apps[0]["versions"]]
+    assert sorted(v["version"] for v in versions) == sorted([ver, "v0.0.9-norf"])  # v9.9.9 (mismatched header) skipped
+    current = next(v for v in versions if v["version"] == ver)
+    assert current["configurable"] is True
+    assert current["size"] == IMAGE.stat().st_size
 
 
 def test_app_files(client):
@@ -141,7 +152,7 @@ def test_sync_roundtrip_and_idempotency(client):
     start = c.get("/api/sync").json()["seq"]
     cfg = config(ver)
     prof = {"id": str(uuid.uuid4()), "name": "fast", "app": "hs_advertiser", "version": ver,
-            "config_id": cfg["id"], "config_name": cfg["name"], "script": cfg["script"],
+            "config_id": cfg["id"], "config_name": cfg["name"], "script": cfg["script"], "rf_stack": "v1",
             "created_at": now(), "client": "pytest"}
     dep = deployment(ver, profile=prof["id"])
     body = {"configs": [cfg], "profiles": [prof], "deployments": [dep]}
@@ -193,3 +204,58 @@ def test_provisioning_role_cannot_update_or_delete():
                     "SELECT count(*) FROM readings"):
             with pytest.raises(psycopg.errors.InsufficientPrivilege):
                 conn.execute(sql)
+
+
+# ---------------- v1.3.0: radio stack, ble_address, network metrics ----------------
+
+def profile(ver, rf_stack, name="p"):
+    script = {"calls": [{"method": "config.set", "params": {"led": {"blink_hz": 2}}}]}
+    return {"id": str(uuid.uuid4()), "name": name, "app": "hs_advertiser", "version": ver, "config_id": None,
+            "config_name": "default", "script": script, "rf_stack": rf_stack, "created_at": now(), "client": "pytest"}
+
+
+@needs_pg
+def test_rf_stack_rules(client):
+    c, ver = client
+    good, missing, bad = profile(ver, "v2"), profile(ver, None), profile(ver, "v3")
+    old_ok, old_bad = profile("v0.0.9-norf", None), profile("v0.0.9-norf", "v1")
+    r = c.post("/api/sync", json={"profiles": [good, missing, bad, old_ok, old_bad]}).json()
+    assert sorted(r["accepted"]["profiles"]) == sorted([good["id"], old_ok["id"]])
+    errs = {x["id"]: x["errors"] for x in r["rejected"]}
+    assert errs[missing["id"]] == ["radio stack must be one of v1, v2"]
+    assert errs[bad["id"]] == ["radio stack must be one of v1, v2"]
+    assert errs[old_bad["id"]] == ["this firmware version declares no radio stack versions"]
+    pulled = c.get("/api/sync?since=0").json()["profiles"]
+    assert next(p for p in pulled if p["id"] == good["id"])["rf_stack"] == "v2"
+
+
+@needs_pg
+def test_deployment_ble_address(client):
+    c, ver = client
+    ok = {**deployment(ver, "0a0b0c0d0e0f"), "ble_address": "0A:0B:0C:0D:0E:11", "rf_stack": "v2"}
+    r = c.post("/api/sync", json={"deployments": [ok]})
+    assert r.status_code == 200 and r.json()["accepted"]["deployments"] == [ok["id"]]
+    bad = {**deployment(ver), "ble_address": "not-a-mac"}
+    assert c.post("/api/sync", json={"deployments": [bad]}).status_code == 422
+    row = next(x for x in c.get("/api/fleet").json() if x["device_id"] == "0a0b0c0d0e0f")
+    assert row["ble_address"] == "0A:0B:0C:0D:0E:11" and row["rf_stack"] == "v2"
+
+
+@needs_pg
+def test_fleet_metrics(client):
+    import psycopg
+    c, _ = client
+    addr = "AA:BB:CC:DD:EE:01"
+    # counters 1,2,3,5,6 (counter 4 missed), then a reboot: 0,1
+    with psycopg.connect(PG, autocommit=True) as conn:
+        for i, (counter, rssi) in enumerate([(1, -50), (2, -52), (3, -54), (5, -56), (6, -58), (0, -60), (1, -62)]):
+            conn.execute("""INSERT INTO readings (received_at, board_id, address, name, rssi, version, counter, temp_c, uptime_s)
+                            VALUES (now() - make_interval(secs => %s), 9, %s, 'hs-09', %s, 1, %s, 30.5, %s)""",
+                         (60 - i * 5, addr, rssi, counter, counter * 5))
+    m = next(x for x in c.get("/api/fleet/metrics?hours=1").json() if x["address"] == addr)
+    assert m["board_id"] == 9
+    assert m["readings"] == 7 and m["missed"] == 1 and m["resets"] == 1
+    assert m["capture_pct"] == 87.5
+    assert m["rssi_last"] == -62 and m["rssi_avg_1h"] == -56
+    assert m["uptime_s"] == 5 and m["temp_c"] == 30.5
+    assert c.get("/api/fleet/metrics?hours=0").status_code == 422

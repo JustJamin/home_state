@@ -17,6 +17,7 @@ configMapGenerator:
       - initdb/002_grafana_role.sh
       - initdb/003_dashboards_role.sh
       - initdb/004_provisioning.sh
+      - initdb/005_v1_3.sql
   - name: grafana-datasources
     files:
       - grafana/datasource.yaml
