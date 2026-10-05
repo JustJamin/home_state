@@ -10,7 +10,11 @@ KUBELET_DROPIN=/var/lib/rancher/k3s/agent/etc/kubelet.conf.d/50-graceful-shutdow
 
 install -Dm644 "$DIR/config.yaml"                    /etc/rancher/k3s/config.yaml
 install -Dm644 "$DIR/k3s-after-docker.conf"          /etc/systemd/system/k3s.service.d/10-after-docker.conf
-install -Dm644 "$DIR/logind-inhibit-delay.conf"      /etc/systemd/logind.conf.d/20-inhibit-delay.conf
+# zz- prefix: logind.conf.d drop-ins from /etc AND /usr/lib are merged in filename order, last wins.
+# unattended-upgrades ships /usr/lib/systemd/logind.conf.d/unattended-upgrades-logind-maxdelay.conf (30s),
+# which sorts after "20-…" and kubelet's "99-kubelet.conf" and capped the delay at 30s.
+rm -f /etc/systemd/logind.conf.d/20-inhibit-delay.conf
+install -Dm644 "$DIR/logind-inhibit-delay.conf"      /etc/systemd/logind.conf.d/zz-k3s-inhibit-delay.conf
 install -Dm600 "$DIR/kubelet-graceful-shutdown.conf" "$KUBELET_DROPIN"
 
 systemctl daemon-reload
