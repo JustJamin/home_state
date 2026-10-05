@@ -1,0 +1,34 @@
+{
+  "app": "hs_advertiser",
+  "description": "Legacy app (v1.0-v1.3.0), kept as the bridge: boards on it can only take an hs_advertiser image, which then lets them switch to any family app.",
+  "led": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "mode": {
+        "type": "string",
+        "enum": [
+          "off",
+          "blink",
+          "heartbeat"
+        ],
+        "description": "User LED pattern",
+        "default": "blink"
+      },
+      "blink_hz": {
+        "type": "number",
+        "minimum": 0.1,
+        "maximum": 10,
+        "description": "Blink (or heartbeat) rate in Hz",
+        "default": 1
+      }
+    }
+  },
+  "default": {
+    "description": "Factory settings: readings every 5 s, advert every 1 s, LED blinking at 1 Hz.",
+    "led": {
+      "mode": "blink",
+      "blink_hz": 1
+    }
+  }
+}

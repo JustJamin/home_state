@@ -9,8 +9,8 @@ import "fake-indexeddb/auto";
 
 const here = new URL("..", import.meta.url);
 const repo = new URL("../../", here);
-const methods = JSON.parse(readFileSync(new URL("firmware/config/methods.json", repo)));
-const defaults = JSON.parse(readFileSync(new URL("firmware/config/default.json", repo)));
+const methods = JSON.parse(readFileSync(new URL("firmware/apps/hs_advertiser/methods.json", repo)));
+const defaults = JSON.parse(readFileSync(new URL("firmware/apps/hs_advertiser/default.json", repo)));
 const BASE = "https://lenovo.test/provision";
 const VER = "v1.3.0-test";
 

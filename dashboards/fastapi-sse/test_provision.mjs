@@ -12,7 +12,7 @@ import { deploy } from "./static/deploy.js";
 import * as B from "./static/builder.js";
 import { buildFleetView, derivedBleAddress, seenState } from "./static/fleetview.js";
 
-const methods = JSON.parse(readFileSync(new URL("../../firmware/config/methods.json", import.meta.url)));
+const methods = JSON.parse(readFileSync(new URL("../../firmware/apps/hs_advertiser/methods.json", import.meta.url)));
 const vectors = JSON.parse(readFileSync(new URL("./tests/script_vectors.json", import.meta.url)));
 let passed = 0;
 const ok = name => { passed++; console.log(`ok  ${name}`); };
@@ -23,19 +23,20 @@ ok(`schema.js: ${vectors.cases.length} shared vectors`);
 
 // ---------- simulated node ----------
 /** A node that speaks the firmware's JSON-RPC rules over a framed characteristic. */
-function simNode({ version = "v1.2.0", rpc = true, boardId = 1, failMethod = null } = {}) {
-  const dev = { version, boardId, settings: { led: { mode: "blink", blink_hz: 1 } }, reboots: 0 };
+function simNode({ version = "v1.2.0", rpc = true, boardId = 1, failMethod = null, app = "hs_advertiser", family = true } = {}) {
+  const dev = { app, family, version, boardId, settings: { led: { mode: "blink", blink_hz: 1 } }, reboots: 0 };
   const handle = (req) => {
     const r = (result) => ({ jsonrpc: "2.0", id: req.id, result });
     const e = (code, message, field) => ({ jsonrpc: "2.0", id: req.id, error: { code, message, ...(field ? { data: { field } } : {}) } });
     if (req.method === failMethod) return e(-32603, "simulated failure");
     switch (req.method) {
-      case "device.info": return r({ device_id: "58e6c513033c", app: "hs_advertiser", version: dev.version, board_id: dev.boardId });
+      case "device.info": return r({ device_id: "58e6c513033c", app: dev.app, version: dev.version, board_id: dev.boardId, ...(dev.family ? { family: "home_state-node" } : {}) });
       case "config.set":
         if (req.params?.led?.blink_hz > 10) return e(-32602, "must be between 0.1 and 10", "led.blink_hz");
         dev.settings = { ...dev.settings, ...req.params, led: { ...dev.settings.led, ...req.params?.led } };
         return r({ config: dev.settings, reboot_required: false });
       case "board.set_id": dev.boardId = req.params.id; return r({ board_id: dev.boardId });
+      case "config.reset": dev.settings = { led: { mode: "blink", blink_hz: 1 } }; return r(dev.settings);
       case "device.reboot": dev.reboots++; return r({ rebooting: true });
       default: return e(-32601, `method not found: ${req.method}`);
     }
@@ -66,7 +67,7 @@ function simNode({ version = "v1.2.0", rpc = true, boardId = 1, failMethod = nul
     dev,
     rpc: null,
     async init(mtu = 517) { this.rpc = rpc ? await makeRpc(mtu) : null; return this; },
-    async readInfo() { return { proj: "hs_advertiser", fw: dev.version, board: dev.boardId, state: "valid", rolled_back_from: null, mtu: 517 }; },
+    async readInfo() { return { proj: dev.app, fw: dev.version, board: dev.boardId, state: "valid", rolled_back_from: null, mtu: 517 }; },
   };
   return node;
 }
@@ -86,8 +87,8 @@ function simNode({ version = "v1.2.0", rpc = true, boardId = 1, failMethod = nul
 }
 
 // ---------- deploy.js ----------
-const profile = (version = "v1.2.0", calls = [{ method: "config.set", params: { led: { blink_hz: 4 } } }]) => ({
-  id: crypto.randomUUID(), name: "fast-blink", app: "hs_advertiser", version, config_id: null, config_name: "fast",
+const profile = (version = "v1.2.0", calls = [{ method: "config.set", params: { led: { blink_hz: 4 } } }], app = "hs_advertiser") => ({
+  id: crypto.randomUUID(), name: "fast-blink", app, version, config_id: null, config_name: "fast",
   script: { calls }, created_at: new Date().toISOString(),
 });
 const catalogue = { json: async () => methods, firmware: async () => new ArrayBuffer(8) };
@@ -99,7 +100,7 @@ function harness(node, opts = {}) {
     store, logs, flashed,
     run: (p, extra = {}) => deploy({
       node, profile: p, catalogue, store, log: m => logs.push(m),
-      flashFn: async (n, img) => { flashed.push(p.version); n.dev.version = opts.flashTo ?? p.version; n.rpc = null; },
+      flashFn: async (n, img) => { flashed.push(`${p.app} ${p.version}`); n.dev.version = opts.flashTo ?? p.version; n.dev.app = opts.flashApp ?? p.app; n.dev.family = true; n.rpc = null; },
       reconnectFn: async (n) => { await n.init(); return n.readInfo(); },
       ...extra,
     }),
@@ -157,8 +158,41 @@ function harness(node, opts = {}) {
   const h = harness(node, { flashTo: "v1.2.0" }); // flash "succeeds" but node comes back on the old version
   const rec = await h.run(profile("v1.3.0"));
   assert.equal(rec.ok, false);
-  assert.match(rec.error, /came back on v1.2.0/);
+  assert.match(rec.error, /came back on hs_advertiser v1.2.0/);
   ok("deploy: node returning on the wrong version (rollback) is a failure");
+}
+
+{
+  // a family node switches apps: flash, then the new app's config
+  const node = await simNode({ version: "v1.3.1", app: "single-blink" }).init();
+  const h = harness(node);
+  const rec = await h.run(profile("v1.3.1", [{ method: "config.reset" }], "double-blink"));
+  assert.equal(rec.ok, true, rec.error);
+  assert.equal(rec.flashed, true);
+  assert.deepEqual(h.flashed, ["double-blink v1.3.1"]);
+  assert.equal(rec.from_app, "single-blink");
+  assert.equal(node.dev.app, "double-blink");
+  assert.ok(h.logs.some(l => l.includes("switching app: single-blink → double-blink")));
+  ok("deploy: family node switches app (single-blink -> double-blink)");
+}
+{
+  // an old node (no family) can't take another app: clear message, nothing flashed
+  const node = await simNode({ version: "v1.3.0", app: "hs_advertiser", family: false }).init();
+  const h = harness(node);
+  const rec = await h.run(profile("v1.3.1", [{ method: "config.reset" }], "single-blink"));
+  assert.equal(rec.ok, false);
+  assert.match(rec.error, /can't switch apps: deploy an hs_advertiser v1\.3\.1\+ profile/);
+  assert.deepEqual(h.flashed, []);
+  ok("deploy: pre-family node refused for an app switch, told to use the bridge");
+}
+{
+  // switch "succeeds" but the node comes back on the old app: failure
+  const node = await simNode({ version: "v1.3.1", app: "single-blink" }).init();
+  const h = harness(node, { flashApp: "single-blink" });
+  const rec = await h.run(profile("v1.3.1", [{ method: "config.reset" }], "double-blink"));
+  assert.equal(rec.ok, false);
+  assert.match(rec.error, /came back on single-blink v1\.3\.1/);
+  ok("deploy: node returning on the wrong app is a failure");
 }
 
 // ---------- sync.js against a fake server ----------
@@ -226,7 +260,7 @@ function fakeServer() {
 {
   const callable = B.callableMethods(methods).map(m => m.name);
   assert.ok(callable.includes("config.set") && !callable.includes("board.set_id") && !callable.includes("device.info"));
-  const def = JSON.parse(readFileSync(new URL("../../firmware/config/default.json", import.meta.url)));
+  const def = JSON.parse(readFileSync(new URL("../../firmware/apps/hs_advertiser/default.json", import.meta.url)));
   let s = { calls: def.calls };
   // a fresh config.set call is filled from the schema defaults and equals the shipped default
   assert.deepEqual(B.newCall(methods, "config.set"), def.calls[0]);

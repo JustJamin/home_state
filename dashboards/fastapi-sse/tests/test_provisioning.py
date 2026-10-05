@@ -24,8 +24,9 @@ import sys  # noqa: E402
 sys.path.insert(0, str(HERE.parent))
 import scripts  # noqa: E402
 
-IMAGE = Path(os.environ.get("FW_IMAGE", REPO / "firmware/build/hs_advertiser.bin"))
-METHODS = json.loads((REPO / "firmware/config/methods.json").read_text())
+IMAGE = Path(os.environ.get("FW_IMAGE", REPO / "firmware/build-hs_advertiser/hs_advertiser.bin"))
+APPS = REPO / "firmware/apps"
+METHODS = json.loads((APPS / "hs_advertiser/methods.json").read_text())  # the vectors use its led {mode, blink_hz}
 now = lambda: datetime.now(timezone.utc).isoformat()
 
 
@@ -40,8 +41,24 @@ def test_script_vectors(case):
     assert scripts.validate_script(case["script"], METHODS, case["shared"]) == case["errors"]
 
 
+def test_app_config_files_up_to_date():
+    import subprocess
+    r = subprocess.run([sys.executable, str(REPO / "tools/app_config.py"), "--check"], capture_output=True, text=True)
+    assert r.returncode == 0, r.stdout
+
+
+@pytest.mark.parametrize("app", ["single-blink", "double-blink", "hs_advertiser"])
+def test_each_app_default_valid_for_itself_only(app):
+    methods = {a: json.loads((APPS / a / "methods.json").read_text()) for a in ("single-blink", "double-blink", "hs_advertiser")}
+    default = json.loads((APPS / app / "default.json").read_text())
+    assert scripts.validate_script(default, methods[app]) == []
+    for other, m in methods.items():
+        if other != app:
+            assert scripts.validate_script(default, m), f"{app} default config must not be valid for {other}"
+
+
 def test_default_config_is_valid():
-    default = json.loads((REPO / "firmware/config/default.json").read_text())
+    default = json.loads((APPS / "hs_advertiser/default.json").read_text())
     assert scripts.validate_script(default, METHODS) == []
 
 
@@ -58,15 +75,15 @@ def client(tmp_path_factory):
     good = tmp_path / "hs_advertiser" / ver
     good.mkdir(parents=True)
     shutil.copy(IMAGE, good / "firmware.bin")
-    shutil.copy(REPO / "firmware/config/default.json", good / "default.config.json")
-    shutil.copy(REPO / "firmware/config/methods.json", good / "methods.json")
+    shutil.copy(APPS / "hs_advertiser/default.json", good / "default.config.json")
+    shutil.copy(APPS / "hs_advertiser/methods.json", good / "methods.json")
     # an older-style version: valid image (header patched to its own version) without rf_stacks
     norf = tmp_path / "hs_advertiser" / "v0.0.9-norf"
     norf.mkdir()
     patched = bytearray(img)
     patched[48:80] = b"v0.0.9-norf".ljust(32, b"\0")
     (norf / "firmware.bin").write_bytes(bytes(patched))
-    shutil.copy(REPO / "firmware/config/default.json", norf / "default.config.json")
+    shutil.copy(APPS / "hs_advertiser/default.json", norf / "default.config.json")
     old_methods = dict(METHODS)
     old_methods.pop("rf_stacks", None)
     (norf / "methods.json").write_text(json.dumps(old_methods))

@@ -1,0 +1,19 @@
+{
+  "app": "single-blink",
+  "name": "default",
+  "description": "Factory settings: readings every 5 s, advert every 1 s, one 100 ms flash per second.",
+  "calls": [
+    {
+      "method": "config.set",
+      "params": {
+        "update_interval_ms": 5000,
+        "adv_interval_ms": 1000,
+        "led": {
+          "enabled": true,
+          "blink_hz": 1,
+          "on_ms": 100
+        }
+      }
+    }
+  ]
+}

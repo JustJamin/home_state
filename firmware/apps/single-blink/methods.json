@@ -1,7 +1,7 @@
 {
-  "app": "hs_advertiser",
+  "app": "single-blink",
   "methods_version": 1,
-  "description": "JSON-RPC methods of hs_advertiser. Param schemas use a JSON Schema subset (type, properties, required, additionalProperties, minimum, maximum, enum; default is a hint for the config builder). Keep in step with firmware/main/rpc.c and settings.c.",
+  "description": "single-blink: One flash per cycle. Settings: blink rate and flash length.",
   "rf_stacks": {
     "versions": [
       "v1",
@@ -12,7 +12,7 @@
   },
   "methods": {
     "config.set": {
-      "description": "Change settings. Only the keys given are changed; all apply immediately and persist across reboots.",
+      "description": "Change settings. Only the keys given are changed; all apply immediately and persist across reboots. The 'led' settings depend on the app.",
       "params": {
         "type": "object",
         "additionalProperties": false,
@@ -35,22 +35,24 @@
             "type": "object",
             "additionalProperties": false,
             "properties": {
-              "mode": {
-                "type": "string",
-                "enum": [
-                  "off",
-                  "blink",
-                  "heartbeat"
-                ],
-                "description": "User LED pattern",
-                "default": "blink"
+              "enabled": {
+                "type": "boolean",
+                "default": true,
+                "description": "LED on/off"
               },
               "blink_hz": {
                 "type": "number",
                 "minimum": 0.1,
                 "maximum": 10,
-                "description": "Blink (or heartbeat) rate in Hz",
-                "default": 1
+                "default": 1,
+                "description": "Flashes per second"
+              },
+              "on_ms": {
+                "type": "integer",
+                "minimum": 10,
+                "maximum": 1000,
+                "default": 100,
+                "description": "Length of each flash (kept shorter than the period)"
               }
             }
           }
@@ -105,7 +107,7 @@
       "params": null
     },
     "device.info": {
-      "description": "Device ID, firmware, partition, board ID.",
+      "description": "Device ID, BLE address, app, firmware, partition, board ID, family.",
       "params": null,
       "script": false
     },
@@ -122,6 +124,28 @@
     "rpc.discover": {
       "description": "List of methods.",
       "params": null,
+      "script": false
+    },
+    "readings.read": {
+      "description": "Buffered readings for the phone gateway (last hour), oldest first, paged.",
+      "params": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "boot_id": {
+            "type": "number"
+          },
+          "after_uptime_s": {
+            "type": "number",
+            "minimum": 0
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 50
+          }
+        }
+      },
       "script": false
     }
   }

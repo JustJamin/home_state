@@ -1,0 +1,45 @@
+{
+  "app": "double-blink",
+  "description": "Two quick flashes, then a longer pause. Settings: flash, gap and pause lengths.",
+  "led": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "enabled": {
+        "type": "boolean",
+        "default": true,
+        "description": "LED on/off"
+      },
+      "flash_ms": {
+        "type": "integer",
+        "minimum": 20,
+        "maximum": 500,
+        "default": 80,
+        "description": "Length of each of the two flashes"
+      },
+      "gap_ms": {
+        "type": "integer",
+        "minimum": 20,
+        "maximum": 1000,
+        "default": 120,
+        "description": "Dark time between the two flashes"
+      },
+      "pause_ms": {
+        "type": "integer",
+        "minimum": 200,
+        "maximum": 10000,
+        "default": 1000,
+        "description": "Dark time after the pair"
+      }
+    }
+  },
+  "default": {
+    "description": "Factory settings: readings every 5 s, advert every 1 s, double flash then a 1 s pause.",
+    "led": {
+      "enabled": true,
+      "flash_ms": 80,
+      "gap_ms": 120,
+      "pause_ms": 1000
+    }
+  }
+}

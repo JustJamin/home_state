@@ -6,7 +6,7 @@ as the phone's provisioning page, so the firmware can be tested without
 the UI. Fault injection flags exercise the node's error paths.
 
     scanner/.venv/bin/python tools/ota_client.py info
-    scanner/.venv/bin/python tools/ota_client.py flash firmware/build/hs_advertiser.bin
+    scanner/.venv/bin/python tools/ota_client.py flash firmware/build-single-blink/single-blink.bin
     ... flash IMAGE --bad-hash | --truncate N | --drop-chunk N | --disconnect-at BYTES | --with-response
 """
 

@@ -3,7 +3,7 @@
 
     tools/.venv/bin/python tools/rpc_client.py --serial /dev/ttyACM0 device.info
     tools/.venv/bin/python tools/rpc_client.py --ble hs-01 config.set '{"led":{"blink_hz":4}}'
-    tools/.venv/bin/python tools/rpc_client.py --serial /dev/ttyACM0 --script firmware/config/default.json
+    tools/.venv/bin/python tools/rpc_client.py --serial /dev/ttyACM0 --script firmware/apps/single-blink/default.json
 
 Setup: python3 -m venv tools/.venv && tools/.venv/bin/pip install -r tools/requirements.txt
 """

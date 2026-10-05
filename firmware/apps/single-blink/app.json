@@ -1,0 +1,37 @@
+{
+  "app": "single-blink",
+  "description": "One flash per cycle. Settings: blink rate and flash length.",
+  "led": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "enabled": {
+        "type": "boolean",
+        "default": true,
+        "description": "LED on/off"
+      },
+      "blink_hz": {
+        "type": "number",
+        "minimum": 0.1,
+        "maximum": 10,
+        "default": 1,
+        "description": "Flashes per second"
+      },
+      "on_ms": {
+        "type": "integer",
+        "minimum": 10,
+        "maximum": 1000,
+        "default": 100,
+        "description": "Length of each flash (kept shorter than the period)"
+      }
+    }
+  },
+  "default": {
+    "description": "Factory settings: readings every 5 s, advert every 1 s, one 100 ms flash per second.",
+    "led": {
+      "enabled": true,
+      "blink_hz": 1,
+      "on_ms": 100
+    }
+  }
+}

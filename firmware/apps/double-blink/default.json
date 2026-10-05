@@ -1,0 +1,20 @@
+{
+  "app": "double-blink",
+  "name": "default",
+  "description": "Factory settings: readings every 5 s, advert every 1 s, double flash then a 1 s pause.",
+  "calls": [
+    {
+      "method": "config.set",
+      "params": {
+        "update_interval_ms": 5000,
+        "adv_interval_ms": 1000,
+        "led": {
+          "enabled": true,
+          "flash_ms": 80,
+          "gap_ms": 120,
+          "pause_ms": 1000
+        }
+      }
+    }
+  ]
+}
