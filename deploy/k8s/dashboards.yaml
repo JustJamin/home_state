@@ -258,6 +258,14 @@ spec:
                   key: db-password
             - name: DATABASE_URL
               value: postgresql://dashboards:$(DB_PASSWORD)@db:5432/home_state
+            # provisioning store (configs, profiles, fleet): its own role, SELECT/INSERT only
+            - name: PROVISIONING_DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: provisioning
+                  key: db-password
+            - name: PROVISIONING_DATABASE_URL
+              value: postgresql://provisioning:$(PROVISIONING_DB_PASSWORD)@db:5432/home_state
           ports:
             - name: http
               containerPort: 8000
