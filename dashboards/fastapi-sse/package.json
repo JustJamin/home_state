@@ -4,7 +4,7 @@
   "description": "Test-only dependencies for the provisioning web app (no build step; the app itself has no npm deps).",
   "type": "module",
   "scripts": {
-    "test": "node test_provision.mjs && node test_ota.mjs ../../firmware/build-single-blink/single-blink.bin && node tests/ui_smoke.mjs"
+    "test": "node test_provision.mjs && node test_ota.mjs ../../firmware/build-single-blink/single-blink.bin && node tests/ui_smoke.mjs && node tests/store_idb.mjs"
   },
   "devDependencies": {
     "fake-indexeddb": "6.2.5",

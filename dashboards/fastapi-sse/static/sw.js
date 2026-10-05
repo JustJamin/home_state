@@ -5,7 +5,7 @@
 //     (catalogue.js fills the same cache when it keeps a version offline)
 //   other /api/*: straight to the network; the app handles being offline itself
 //   push: temperature alerts from the server; tapping one opens the dashboard (/) in the app
-const SHELL = "hs-shell-v3";
+const SHELL = "hs-shell-v4";
 const CATALOGUE = "hs-catalogue";
 const SHELL_FILES = [
   "/provision", "/manifest.webmanifest", "/static/theme.css",
@@ -18,7 +18,9 @@ const SHELL_FILES = [
 const NETWORK_TIMEOUT_MS = 3000; // offline with the VPN half-up, fetches can hang rather than fail
 
 self.addEventListener("install", e => {
-  e.waitUntil(caches.open(SHELL).then(c => c.addAll(SHELL_FILES)).then(() => self.skipWaiting()));
+  // cache: "reload" so the shell is never filled from a stale HTTP cache entry
+  e.waitUntil(caches.open(SHELL).then(c => c.addAll(SHELL_FILES.map(u => new Request(u, { cache: "reload" }))))
+    .then(() => self.skipWaiting()));
 });
 
 self.addEventListener("activate", e => {
@@ -35,7 +37,8 @@ function timeout(ms) {
 async function networkFirst(req) {
   const cache = await caches.open(SHELL);
   try {
-    const res = await Promise.race([fetch(req), timeout(NETWORK_TIMEOUT_MS)]);
+    // no-cache: always revalidate with the server (304 if unchanged), never trust a heuristic HTTP cache entry
+    const res = await Promise.race([fetch(req, { cache: "no-cache" }), timeout(NETWORK_TIMEOUT_MS)]);
     if (res.ok) cache.put(req, res.clone());
     return res;
   } catch {

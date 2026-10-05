@@ -137,6 +137,9 @@ def test_pages(client):
     c, _ = client
     for p in ("/", "/provision", "/sw.js", "/manifest.webmanifest", "/static/vendor/uPlot.iife.min.js"):
         assert c.get(p).status_code == 200, p
+    # static files must be revalidated, or a phone can mix an old module with new ones (v1.3.1 bug)
+    for p in ("/static/store.js", "/static/app.js", "/static/vendor/uPlot.iife.min.js"):
+        assert c.get(p).headers["cache-control"] == "no-cache", p
 
 
 # ---------------- sync + fleet (needs Postgres) ----------------

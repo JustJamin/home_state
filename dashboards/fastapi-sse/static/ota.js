@@ -187,7 +187,8 @@ export async function reconnectInfo(node, { tries = 30, delayMs = 2000, onLog = 
       await node.connect();
       return await node.readInfo();
     } catch (e) {
-      onLog(`reconnect ${i}/${tries}: ${e.message}`);
+      // normal while the node reboots and starts advertising again (a few seconds)
+      onLog(`node not back yet (attempt ${i}/${tries}: ${e.message})`);
     }
   }
   throw new OtaError("Node did not come back within a minute");

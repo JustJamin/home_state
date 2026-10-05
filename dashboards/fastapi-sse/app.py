@@ -91,7 +91,18 @@ async def lifespan(_: FastAPI):
 
 
 app = FastAPI(title="home_state · FastAPI + SSE", lifespan=lifespan)
-app.mount("/static", StaticFiles(directory=STATIC), name="static")
+class RevalidatedStatic(StaticFiles):
+    """Static files the browser must revalidate on every use (cheap: unchanged files get 304).
+    Without this, Chrome's heuristic HTTP cache can keep serving an old module next to new ones
+    (v1.3.1: a stale store.js opened IndexedDB without the new gateway store)."""
+
+    async def get_response(self, path, scope):
+        r = await super().get_response(path, scope)
+        r.headers.setdefault("Cache-Control", "no-cache")
+        return r
+
+
+app.mount("/static", RevalidatedStatic(directory=STATIC), name="static")
 app.include_router(provisioning.router)
 app.include_router(alerts.router)
 
