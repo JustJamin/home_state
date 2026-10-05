@@ -7,7 +7,7 @@ let threshold = null;
 let pushed = 0;
 
 const temp = mount({
-  root: $("temp"), metric: "temp", title: "Chip temperature", unit: "°C", key: "dash.temp",
+  root: $("temp"), metric: "temp", title: "Server temperature", unit: "°C", key: "dash.temp",
   threshold: () => threshold,
 });
 

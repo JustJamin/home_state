@@ -11,7 +11,7 @@ import { validateScript, scriptableMethods } from "./schema.js";
 import { Node } from "./ota.js";
 import { deploy } from "./deploy.js";
 import * as B from "./builder.js";
-import { buildFleetView, seenState } from "./fleetview.js";
+import { buildFleetView, seenState, NAME_RE } from "./fleetview.js";
 import { mount as mountChart } from "./livechart.js";
 import * as GW from "./gateway.js";
 
@@ -62,7 +62,8 @@ const catalogue = new Catalogue(store);
 const ui = {
   apps: [], methods: null, defaultScript: null, configs: [], script: { calls: [] }, dirty: false,
   mode: "form", jsonError: null, target: null, profiles: [], profileOpen: false, rssi: null, metrics: (await store.getMeta("metrics")) ?? null,
-  loadedVersion: null, loadedConfig: null, // what the Build editor currently shows (kept across background refreshes)
+  loadedVersion: null, loadedConfig: null,
+  names: (await store.getMeta("names")) ?? {}, // device_id -> fleet name (cached for offline display) // what the Build editor currently shows (kept across background refreshes)
   expanded: new Set(),
 };
 
@@ -109,6 +110,8 @@ async function syncNow() {
       if (up.uploaded) gwLog(`uploaded ${up.uploaded} gateway reading(s): ${up.inserted} new, ${up.duplicates} the server already had`);
     } catch (e) { gwLog(`upload failed: ${e.message}`); }
     await renderGateway();
+    await loadNames();
+    if (fleetVisible()) renderFleet();
     loadAlerts();
     if (r.rejected.length) alert(`The server refused ${r.rejected.length} record(s):\n` + r.rejected.map(x => x.errors.join("; ")).join("\n"));
     await refreshAll();
@@ -152,7 +155,8 @@ async function renderVersion() {
   const v = ui.apps.find(a => a.app === app)?.versions.find(x => x.version === version);
   $("config-card").classList.toggle("hidden", !v);
   if (!v) { $("version-info").textContent = "No configurable versions."; $("rf-wrap").classList.add("hidden"); return; }
-  $("version-info").textContent = `${kb(v.size)} · built ${v.built.replace("T", " ")} · ESP-IDF ${v.idf}`;
+  $("version-info").textContent = "";
+  $("offline-size").textContent = kb(v.size);
   const keep = (await store.getMeta("keepOffline")) ?? [];
   $("keep-offline").checked = keep.includes(`${app}\n${version}`);
   const key = `${app}\n${version}`;
@@ -217,7 +221,7 @@ async function renderConfigs(selectId) {
     .sort((a, b) => b.created_at.localeCompare(a.created_at));
   const sel = $("config");
   const prev = selectId ?? sel.value;
-  sel.replaceChildren(h("option", { value: DEFAULT }, "default (ships with this version)"),
+  sel.replaceChildren(h("option", { value: DEFAULT }, "Default"),
     ...ui.configs.map(c => h("option", { value: c.id }, `${c.name}${c._rejected ? " ⚠ refused by server" : ""}`)));
   sel.value = [DEFAULT, ...ui.configs.map(c => c.id)].includes(prev) ? prev : DEFAULT;
   if (sel.value !== ui.loadedConfig) loadConfig(); // else keep the editor, including unsaved edits
@@ -308,8 +312,8 @@ function renderBuilder() {
     let body;
     if (!B.representable(call, ui.methods)) body = h("div", { class: "muted fld" }, "This call has something the form can't show; edit it in JSON.");
     else if (m?.params) body = renderFields(B.fieldsFor(m.params, call.params ?? {}), i);
-    else body = h("div", { class: "muted fld" }, m?.description ?? "No settings.");
-    return h("div", { class: "call" }, head, m?.description && m.params ? h("div", { class: "muted" }, m.description) : null, body);
+    else body = h("div", { class: "muted fld" }, "No settings.");
+    return h("div", { class: "call" }, head, body); // what each method does is in the methods guide below
   }), calls.length ? "" : h("div", { class: "muted", style: "margin-top:10px" }, "No calls yet: add one below."));
 }
 
@@ -324,7 +328,7 @@ function renderFields(fields, i, parentIncluded = true) {
     const set = (v) => edit(B.setParam(ui.script, i, f.path, v));
     if (f.kind === "object") {
       return h("div", { class: `fld${on && parentIncluded ? "" : " off"}` },
-        h("div", { class: "fld-head" }, toggle, h("label", {}, f.label), h("span", { class: "muted" }, f.description)),
+        h("div", { class: "fld-head" }, toggle, h("label", {}, f.label)),
         h("fieldset", {}, renderFields(f.children, i, on && parentIncluded)));
     }
     let ctl;
@@ -340,7 +344,8 @@ function renderFields(fields, i, parentIncluded = true) {
     } else if (f.kind === "enum") {
       ctl = h("select", { onchange: e => set(e.target.value) }, f.schema.enum.map(x => h("option", { value: x, selected: x === f.value }, x)));
     } else if (f.kind === "bool") {
-      ctl = h("input", { type: "checkbox", checked: f.value, onchange: e => set(e.target.checked) });
+      const sw = h("input", { type: "checkbox", checked: f.value, onchange: e => set(e.target.checked) });
+      return h("div", { class: "fld" }, h("label", { class: "fld-head" }, sw, h("span", {}, f.label)));
     } else {
       ctl = h("input", { type: "text", value: f.value ?? "", oninput: e => set(e.target.value) });
     }
@@ -387,6 +392,11 @@ async function saveConfig() {
 }
 $("save-config").addEventListener("click", saveConfig);
 
+/** The Profile tab's main button: "Save as profile…", or "Deploy to target: X" when a Fleet device is targeted. */
+function renderProfileButton() {
+  $("save-profile").textContent = ui.target ? `Deploy to target: ${ui.target.label}` : "Save as profile…";
+}
+
 $("save-profile").addEventListener("click", async () => {
   let cfg = selectedConfig();
   if (ui.dirty) {
@@ -396,7 +406,8 @@ $("save-profile").addEventListener("click", async () => {
   }
   const version = $("version").value;
   const rf = ui.methods.rf_stacks ? $("rf-stack").value : null;
-  const name = prompt("Name for this profile:", `${cfg.name} @ ${$("app").value} ${version}${rf ? ` · RF ${rf}` : ""}`)?.trim();
+  const name = prompt(ui.target ? `Save as a profile to deploy to ${ui.target.label}. Profile name:` : "Name for this profile:",
+                      `${cfg.name} @ ${$("app").value} ${version}${rf ? ` · RF ${rf}` : ""}`)?.trim();
   if (!name) return;
   const p = await addRecord(store, "profiles", {
     id: crypto.randomUUID(), name, app: $("app").value, version, config_id: cfg.id, config_name: cfg.name,
@@ -539,7 +550,7 @@ async function renderProfileDetail() {
     h("div", {}, h("b", {}, p.name)),
     h("dl", { class: "kv", style: "margin-top:8px" },
       h("dt", {}, "firmware"), h("dd", {}, `${p.app} ${p.version}`),
-      h("dt", {}, "radio stack"), h("dd", {}, p.rf_stack ?? "–"),
+      h("dt", {}, "RF module firmware"), h("dd", {}, p.rf_stack ?? "–"),
       h("dt", {}, "config"), h("dd", {}, p.config_name),
       h("dt", {}, "created"), h("dd", {}, new Date(p.created_at).toLocaleString())),
     h("div", { class: "muted", style: "margin-top:8px" }, "Calls, run in order:"),
@@ -557,10 +568,12 @@ $("profile-select").addEventListener("change", async () => {
 function renderTarget() {
   const t = ui.target;
   $("target-line").replaceChildren(t
-    ? h("span", {}, "Target: ", h("b", {}, t.name), t.device_id ? h("span", { class: "muted mono" }, ` · ${t.device_id}`) : null,
-        h("span", { class: "muted" }, " (only this node will be offered)"))
+    ? h("span", {}, "Target: ", h("b", {}, t.label), t.label !== t.name ? h("span", { class: "muted" }, ` (${t.name})`) : null,
+        t.device_id ? h("span", { class: "muted mono" }, ` · ${t.device_id}`) : null,
+        h("span", { class: "muted" }, ` · the chooser will offer only ${t.name}`))
     : h("span", { class: "muted" }, "Target: any hs-* node; you'll pick it in the Bluetooth chooser."),
     t ? h("button", { class: "secondary icon", title: "clear target", onclick: () => { ui.target = null; renderTarget(); } }, "✕") : null);
+  renderProfileButton();
 }
 
 async function archiveProfile(p) {
@@ -681,10 +694,42 @@ async function refreshMetrics() {
 }
 setInterval(() => fleetVisible() && refreshMetrics(), 30000);
 
-function targetDevice(name, device_id = null, ble_address = null) {
-  ui.target = { name, device_id, ble_address };
-  showTab("deploy");
+/** Target a fleet device: name = its Bluetooth name (hs-NN, what the chooser shows), label = its fleet name. */
+function targetDevice({ name, label, device_id = null, ble_address = null }, tab = "deploy") {
+  ui.target = { name, label: label ?? name, device_id, ble_address };
+  showTab(tab);
   renderTarget();
+}
+
+const displayName = (deviceId, boardId) => ui.names[deviceId] ?? (boardId != null ? boardName(boardId) : "hs-??");
+
+async function loadNames() {
+  try {
+    const r = await fetch("api/devices/names");
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    ui.names = Object.fromEntries((await r.json()).map(x => [x.device_id, x.name]));
+    await store.setMeta("names", ui.names);
+  } catch { /* offline: keep the cached names */ }
+}
+
+async function renameDevice(deviceId, current) {
+  if (sync.state.online === false) { alert("Renaming needs a connection to the server (names must be unique in the fleet)."); return; }
+  const name = prompt("Name for this device (1-20 letters, numbers, '.', '-' or '_'; leave empty to clear):", current ?? "");
+  if (name === null) return;
+  const trimmed = name.trim();
+  if (trimmed && !NAME_RE.test(trimmed)) { alert("Names are 1-20 characters: letters, numbers, '.', '-' and '_'."); return; }
+  try {
+    const r = await fetch(`api/devices/${deviceId}/name`, {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: trimmed || null, client: CLIENT }),
+    });
+    const body = await r.json();
+    if (!r.ok) throw new Error(typeof body.detail === "string" ? body.detail : `HTTP ${r.status}`);
+    if (body.name) ui.names[deviceId] = body.name; else delete ui.names[deviceId];
+    await store.setMeta("names", ui.names);
+  } catch (e) {
+    alert(`Couldn't rename: ${e.message}`);
+  }
+  renderFleet();
 }
 
 function metricsLine(m, extra = []) {
@@ -697,7 +742,7 @@ let fleetGen = 0;
 
 async function renderFleet() {
   const gen = ++fleetGen;
-  const view = buildFleetView(await fleet(store), ui.metrics?.rows ?? [], await store.all("profiles"));
+  const view = buildFleetView(await fleet(store), ui.metrics?.rows ?? [], await store.all("profiles"), ui.names);
   if (gen !== fleetGen) return;
   $("metrics-age").textContent = ui.metrics
     ? (sync.state.online === false ? `network metrics as of ${new Date(ui.metrics.at).toLocaleTimeString()}` : `metrics ${ago(ui.metrics.at)}`)
@@ -716,29 +761,40 @@ async function renderFleet() {
   $("unprovisioned").replaceChildren(...(view.unprovisioned.length ? [h("div", { class: "group" },
     h("div", { class: "group-head" }, h("h3", {}, "Seen by the scanner, not in the fleet"),
       h("span", { class: "muted" }, "no deployment recorded yet")),
-    view.unprovisioned.map(m => h("div", { class: "dev" },
-      h("div", { class: "dev-row", style: "cursor:default" },
-        h("span", { class: `dot ${seenState(m.last_seen)}` }),
-        h("span", {}, h("b", {}, boardName(m.board_id)), h("span", { class: "muted mono" }, ` · ${m.address}`)),
-        h("button", { class: "secondary small", onclick: () => targetDevice(boardName(m.board_id), null, m.address) }, "Deploy to it"),
-        h("span", { class: "metrics" }, metricsLine(m))))))] : []));
+    view.unprovisioned.map(m => {
+      const target = { name: boardName(m.board_id), label: m.name ?? boardName(m.board_id), device_id: m.device_id, ble_address: m.address };
+      return h("div", { class: "dev" },
+        h("div", { class: "dev-row", style: "cursor:default" },
+          h("span", { class: `dot ${seenState(m.last_seen)}` }),
+          h("span", {}, h("b", {}, target.label), m.name ? h("span", { class: "muted" }, ` ${target.name}`) : null,
+            h("span", { class: "muted mono" }, ` · ${m.device_id}`)),
+          h("span", {}),
+          h("span", { class: "metrics" }, metricsLine(m))),
+        h("div", { class: "row", style: "margin:0 0 10px 22px" },
+          h("button", { class: "small", onclick: () => targetDevice(target) }, "Deploy"),
+          h("button", { class: "secondary small", onclick: () => targetDevice(target, "profile") }, "Profile"),
+          h("button", { class: "secondary small", onclick: () => renameDevice(m.device_id, m.name) }, "Rename")));
+    }))] : []));
 }
 
 function deviceRow(d) {
   const open = ui.expanded.has(d.device_id);
-  const name = d.board_id != null ? boardName(d.board_id) : "hs-??";
+  const name = d.board_id != null ? boardName(d.board_id) : "hs-??"; // Bluetooth name
+  const label = d.name ?? name;                                          // fleet name, if it has one
   const m = d.metrics;
   const toggle = () => { open ? ui.expanded.delete(d.device_id) : ui.expanded.add(d.device_id); renderFleet(); };
   const row = h("div", { class: "dev-row", onclick: toggle, title: open ? "collapse" : "expand" },
     h("span", { class: `dot ${seenState(m?.last_seen)}` }),
-    h("span", {}, h("b", {}, name), h("span", { class: "muted mono" }, ` · ${d.device_id}`)),
+    h("span", {}, h("b", {}, label), d.name ? h("span", { class: "muted" }, ` ${name}`) : null,
+      h("span", { class: "muted mono" }, ` · ${d.device_id}`)),
     h("span", {}, d.latest.ok ? h("span", { class: "badge ok" }, "ok") : h("span", { class: "badge bad" }, "last deploy failed"),
       h("span", { class: "chev" }, " ›")),
-    h("span", { class: "metrics" }, metricsLine(m, [` · ${d.current.version}`])));
+    h("span", { class: "metrics" }, metricsLine(m))); // firmware version is in the group header (and below when open)
   if (!open) return h("div", { class: "dev" }, row);
   const kv = [
-    ["device ID", d.device_id], ["BLE address", d.ble_address], ["firmware", `${d.current.app} ${d.current.version}`],
-    ["profile", d.current.profile_name ?? "–"], ["radio stack", d.current.rf_stack ?? "–"],
+    ["name", d.name ?? "–"], ["Bluetooth name", name], ["device ID", d.device_id], ["BLE address", d.ble_address],
+    ["firmware", `${d.current.app} ${d.current.version}`],
+    ["profile", d.current.profile_name ?? "–"], ["RF module firmware", d.current.rf_stack ?? "–"],
     ["last deploy", `${new Date(d.latest.finished_at).toLocaleString()} ${d.latest.ok ? "✓" : `✗ ${d.latest.error ?? ""}`}`],
   ];
   if (m) kv.push(["last seen", `${new Date(m.last_seen).toLocaleString()} (${ago(m.last_seen)})`],
@@ -748,7 +804,9 @@ function deviceRow(d) {
   return h("div", { class: "dev open" }, row, h("div", { class: "dev-body" },
     h("dl", { class: "kv" }, kv.flatMap(([k, v]) => [h("dt", {}, k), h("dd", {}, v)])),
     h("div", { class: "row" },
-      h("button", { class: "small", onclick: () => targetDevice(name, d.device_id, d.ble_address) }, "Deploy to this device"),
+      h("button", { class: "small", onclick: () => targetDevice({ name, label, device_id: d.device_id, ble_address: d.ble_address }) }, "Deploy"),
+      h("button", { class: "secondary small", onclick: () => targetDevice({ name, label, device_id: d.device_id, ble_address: d.ble_address }, "profile") }, "Profile"),
+      h("button", { class: "secondary small", onclick: () => renameDevice(d.device_id, d.name) }, "Rename"),
       h("button", { class: "secondary small", onclick: toggle }, "Collapse")),
     h("div", { class: "muted", style: "margin-top:10px" }, `History (${d.history.length})`),
     d.history.map(x => h("div", { class: "hist" },
@@ -924,6 +982,7 @@ window.__step = "rendering";
 setMode("form");
 await sync.refreshPending();
 await refreshAll();
+renderProfileButton();
 if (fleetVisible()) { refreshMetrics(); showRssi(); }
 await renderGateway();
 window.__appReady = true; // the start-up guard in provision.html stands down

@@ -11,11 +11,12 @@ export function colours(boards) {
   return Object.fromEntries([...boards].sort().map((b, i) => [b, PALETTE[i % PALETTE.length]]));
 }
 
-/** Group readings ([{board, received_at, temp_c, rssi}]) into {board: {t: [s], temp: [], rssi: []}}, time-sorted. */
+/** Group readings ([{label|board, received_at, temp_c, rssi}]) by device label (its fleet name, else hs-NN),
+ *  into {label: {t: [s], temp: [], rssi: []}}, time-sorted. */
 export function byBoard(rows) {
   const out = {};
   for (const r of [...rows].sort((a, b) => a.received_at.localeCompare(b.received_at))) {
-    const s = (out[r.board] ??= { t: [], temp: [], rssi: [] });
+    const s = (out[r.label ?? r.board] ??= { t: [], temp: [], rssi: [] });
     s.t.push(Date.parse(r.received_at) / 1000);
     s.temp.push(r.temp_c);
     s.rssi.push(r.rssi);

@@ -49,6 +49,7 @@ const serverProfiles = [{ id: "p-fast", name: "fast-blink", app: "hs_advertiser"
 const pushed = [];
 let alertCfg = { threshold_c: 35, clear_below_c: 34, changed_at: null, vapid_public_key: "BAAA", push_enabled: true };
 const savedThresholds = [];
+const fleetNames = { "58e6c513033c": "rack-1" };
 const gatewayUploads = [];
 const metrics = [
   { address: "58:E6:C5:13:03:3E", board_id: 1, last_seen: iso(2), rssi_last: -57, rssi_avg_1h: -56, readings: 17000, missed: 40, resets: 3, capture_pct: 99.77, uptime_s: 900, temp_c: 30 },
@@ -74,6 +75,15 @@ globalThis.fetch = window.fetch = async (input, init = {}) => {
   }
   if (p === "/api/sync") return json({ seq: 3, configs: [], profiles: serverProfiles, deployments: serverDeployments, archives: [] });
   if (p === "/api/fleet/metrics") return json(metrics);
+  if (p === "/api/devices/names") return json(Object.entries(fleetNames).map(([device_id, name]) => ({ device_id, name, changed_at: new Date().toISOString() })));
+  const nm = p.match(/^\/api\/devices\/([0-9a-f]{12})\/name$/);
+  if (nm) {
+    const name = JSON.parse(init.body).name;
+    const clash = Object.entries(fleetNames).find(([id, n]) => id !== nm[1] && name && n.toLowerCase() === name.toLowerCase());
+    if (clash) return json({ detail: `'${name}' is already the name of device ${clash[0]}` }, 409);
+    if (name) fleetNames[nm[1]] = name; else delete fleetNames[nm[1]];
+    return json({ device_id: nm[1], name });
+  }
   if (p === "/api/alerts/config" && init.method === "POST") {
     const b = JSON.parse(init.body);
     if (!(b.clear_below_c < b.threshold_c)) return json({ detail: "bad" }, 422);
@@ -126,17 +136,17 @@ ok("Admin: title, tab order Fleet / Profile / Deploy / Gateway, opens on Fleet")
 
 assert.ok($("unsupported").classList.contains("show"), "no Web Bluetooth -> explained, deploy disabled");
 assert.equal($("deploy-btn").disabled, true);
-assert.doesNotMatch($("profile-detail").textContent, /radio stack/, "details collapsed by default");
+assert.doesNotMatch($("profile-detail").textContent, /RF module firmware/, "details collapsed by default");
 const viewBtn = () => [...$("profile-detail").querySelectorAll("button")].find(b => /profile/.test(b.textContent));
 assert.equal(viewBtn().textContent, "View profile");
 click(viewBtn());
-await waitFor(() => /radio stack.*v1/s.test($("profile-detail").textContent), "profile expanded");
+await waitFor(() => /RF module firmware.*v1/s.test($("profile-detail").textContent), "profile expanded");
 assert.match($("profile-detail").textContent, /config\.set/);
 assert.ok([...$("profile-detail").querySelectorAll("button")].some(b => b.textContent === "Export JSON"));
 click(viewBtn());
-await waitFor(() => !/radio stack/.test($("profile-detail").textContent), "profile collapsed again");
+await waitFor(() => !/RF module firmware/.test($("profile-detail").textContent), "profile collapsed again");
 click(viewBtn());
-await waitFor(() => /radio stack/.test($("profile-detail").textContent), "expanded for later checks");
+await waitFor(() => /RF module firmware/.test($("profile-detail").textContent), "expanded for later checks");
 ok("Deploy: profile dropdown; 'View profile' expands the details (firmware, radio stack, calls, export) and hides them");
 
 // ---------- Build with the form ----------
@@ -176,7 +186,13 @@ assert.match(ref, /A config is a list of these calls, run in order on the node/)
 assert.match(ref, /update_interval_ms \(whole number 1000–600000 ms, default 5000 ms\)/);
 assert.match(ref, /How often the node takes a new reading/);
 assert.match(ref, /device\.reboot.*reboots the node.*Takes no parameters/s);
-ok("Methods guide: what each call does, every setting's type, range, unit, default and meaning");
+assert.equal(window.document.querySelector("details.ref summary").textContent, "Expand for full detail of methods for this version");
+assert.equal($("config").options[0].textContent, "Default");
+assert.equal($("load-file").textContent, "Or Load from file");
+assert.match(window.document.querySelector('label[for="rf-stack"]').textContent, /^RF Module firmware version$/);
+assert.match($("keep-offline").parentElement.textContent, /Save this firmware for offline use - 664 KB/);
+assert.doesNotMatch($("builder").textContent, /Change the node's settings/, "method descriptions only in the guide");
+ok("Methods guide: what each call does, every setting's type, range, unit, default and meaning; Profile wording");
 
 // ---------- JSON fallback ----------
 click($("mode-json"));
@@ -212,7 +228,7 @@ promptAnswers = ["beacon RF2"];
 click($("save-profile"));
 await waitFor(() => [...$("profile-select").options].some(o => o.textContent === "beacon RF2"), "saved profile listed");
 await waitFor(() => $("profile-select").options[$("profile-select").selectedIndex]?.textContent === "beacon RF2", "new profile selected in Deploy");
-await waitFor(() => /beacon RF2.*radio stack\s*v2/s.test($("profile-detail").textContent), "detail card for the new profile");
+await waitFor(() => /beacon RF2.*RF module firmware\s*v2/s.test($("profile-detail").textContent), "detail card for the new profile");
 await waitFor(() => pushed.some(b => b.profiles?.some(p => p.name === "beacon RF2" && p.rf_stack === "v2")), "profile pushed with rf_stack");
 const sentProfile = pushed.flatMap(b => b.profiles).find(p => p.name === "beacon RF2");
 assert.deepEqual(sentProfile.script, good, "profile carries the built script");
@@ -248,8 +264,9 @@ ok("Files: config script loads into the editor; whole profile imported + synced;
 tab("profile");
 $("app").value = "single-blink"; fire($("app"), "change");
 await waitFor(() => [...$("builder").querySelectorAll(".fld-head label")].some(l => l.textContent === "on ms"), "single-blink form");
-const enabledFld = [...$("builder").querySelectorAll(".fld")].find(f => f.querySelector(".fld-head label")?.textContent === "enabled");
+const enabledFld = [...$("builder").querySelectorAll(".fld")].find(f => f.querySelector(".fld-head")?.textContent === "enabled");
 assert.equal(enabledFld.querySelectorAll('input[type=checkbox]').length, 1, "only the on/off switch itself");
+assert.equal(enabledFld.querySelector("label.fld-head input[type=checkbox]")?.nextElementSibling?.textContent, "enabled", "switch sits right next to its label");
 assert.ok(!enabledFld.classList.contains("off"));
 const sw = enabledFld.querySelector('input[type=checkbox]');
 sw.checked = false; fire(sw, "change");
@@ -265,9 +282,10 @@ await waitFor(() => window.document.querySelectorAll("#fleet-groups .dev").lengt
 const group = window.document.querySelector("#fleet-groups .group");
 assert.match(group.querySelector(".group-head").textContent, /fast-blink.*RF v1.*2 devices/s);
 const rows = [...window.document.querySelectorAll("#fleet-groups .dev")];
-assert.match(rows[0].textContent, /hs-01.*58e6c513033c.*-57 dBm.*capture 99\.77%.*missed 40/s, "hs-01 metrics (derived BLE address)");
+assert.match(rows[0].textContent, /rack-1 hs-01.*58e6c513033c.*-57 dBm.*capture 99\.77%.*missed 40/s, "fleet name shown, hs-01 beside it; metrics");
+assert.doesNotMatch(rows[0].textContent, /v1\.3\.0-test/, "collapsed row doesn't repeat the firmware version");
 assert.match(rows[1].textContent, /hs-02.*58e6c5195088.*-51 dBm.*capture 100%/s, "hs-02 metrics (recorded BLE address)");
-assert.match($("unprovisioned").textContent, /hs-09.*11:22:33:44:55:66/s, "heard-but-unprovisioned board listed");
+assert.match($("unprovisioned").textContent, /hs-09 · 112233445564.*DeployProfileRename/s, "heard-but-unprovisioned board listed, with its device ID and actions");
 ok("Fleet: grouped by profile, sorted by board, metrics joined, unprovisioned section");
 
 click(rows[1].querySelector(".dev-row"));
@@ -275,18 +293,47 @@ await waitFor(() => window.document.querySelector("#fleet-groups .dev.open"), "e
 const open = window.document.querySelector("#fleet-groups .dev.open");
 assert.match(open.textContent, /History \(1\)/);
 assert.match(open.textContent, /flashed v1\.2\.0 → v1\.3\.0-test/);
+assert.match(open.textContent, /firmware.*hs_advertiser v1\.3\.0-test/s, "firmware version shown when expanded");
+assert.deepEqual([...open.querySelectorAll(".row button")].map(b => b.textContent), ["Deploy", "Profile", "Rename", "Collapse"]);
 click([...open.querySelectorAll("button")].find(b => b.textContent === "Collapse"));
 await waitFor(() => !window.document.querySelector("#fleet-groups .dev.open"), "collapse");
 click(window.document.querySelectorAll("#fleet-groups .dev")[1].querySelector(".dev-row"));
 await waitFor(() => window.document.querySelector("#fleet-groups .dev.open"), "expand again");
 ok("Fleet: device row expands to details + history and collapses again");
 
-click([...window.document.querySelector("#fleet-groups .dev.open").querySelectorAll("button")].find(b => b.textContent === "Deploy to this device"));
+const devBtn = text => [...window.document.querySelector("#fleet-groups .dev.open").querySelectorAll("button")].find(b => b.textContent === text);
+// rename hs-02: a name already used (ignoring capitals) is refused, a free one is taken
+promptAnswers = ["RACK-1"];
+click(devBtn("Rename"));
+await waitFor(() => alerts.some(a => /already the name of device 58e6c513033c/.test(a)), "duplicate name refused");
+promptAnswers = ["server.room_2"];
+click(devBtn("Rename"));
+await waitFor(() => /server\.room_2 hs-02/.test(window.document.querySelectorAll("#fleet-groups .dev")[1].textContent), "renamed");
+promptAnswers = ["bad name!"];
+click(devBtn("Rename"));
+assert.ok(alerts.some(a => /1-20 characters/.test(a)), "invalid characters refused before asking the server");
+ok("Fleet names: shown with hs-NN beside them; rename; duplicates (any capitals) and bad characters refused");
+
+click(devBtn("Deploy"));
 await waitFor(() => !window.document.querySelector('[data-panel="deploy"]').classList.contains("hidden"), "jump to deploy");
-assert.match($("target-line").textContent, /Target: hs-02 · 58e6c5195088 \(only this node will be offered\)/);
+assert.match($("target-line").textContent, /Target: server\.room_2 \(hs-02\) · 58e6c5195088 · the chooser will offer only hs-02/);
 click($("target-line").querySelector("button"));
 assert.match($("target-line").textContent, /any hs-\* node/);
-ok("Fleet -> Deploy: targets that node (chooser filtered by name), target can be cleared");
+ok("Fleet 'Deploy': targets that node by its fleet name (chooser filtered to its Bluetooth name); target can be cleared");
+
+tab("fleet");
+await waitFor(() => window.document.querySelector("#fleet-groups .dev.open"), "still expanded");
+click(devBtn("Profile"));
+await waitFor(() => !window.document.querySelector('[data-panel="profile"]').classList.contains("hidden"), "jump to profile");
+assert.equal($("save-profile").textContent, "Deploy to target: server.room_2");
+promptAnswers = ["room-2-cfg", "for-room-2"]; // unsaved edits: config name first, then the profile name
+click($("save-profile"));
+await waitFor(() => !window.document.querySelector('[data-panel="deploy"]').classList.contains("hidden")
+  && $("profile-select").options[$("profile-select").selectedIndex]?.textContent === "for-room-2", "profile saved, on Deploy");
+assert.match($("target-line").textContent, /Target: server\.room_2/, "target kept for the deploy");
+click($("target-line").querySelector("button"));
+assert.equal($("save-profile").textContent, "Save as profile…", "button back to normal without a target");
+ok("Fleet 'Profile': Profile tab's button reads 'Deploy to target: <name>', saves a profile, lands on Deploy with the target");
 
 // ---------- Alerts panel ----------
 click($("bell"));

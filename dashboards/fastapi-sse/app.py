@@ -26,6 +26,7 @@ from psycopg.rows import dict_row
 from psycopg_pool import AsyncConnectionPool
 
 import alerts
+import names
 import provisioning
 
 DUMMY_DATA_BEFORE = datetime(2026, 10, 4, 20, 30, 52, tzinfo=timezone.utc)
@@ -62,9 +63,10 @@ class Broadcaster:
                 continue
             for r in rows:
                 self.last_id = r["id"]
+                r["label"] = names.label(r["address"], r["board"])
                 for q in self.subscribers:
                     q.put_nowait(r)
-                events = alerts.engine.observe(r["address"], r["board"], r["temp_c"])
+                events = alerts.engine.observe(r["address"], r["label"], r["temp_c"])
                 if events:
                     asyncio.create_task(alerts.notify(events))
 
@@ -79,10 +81,15 @@ async def lifespan(_: FastAPI):
     if provisioning.pool:
         await provisioning.pool.open()
         alerts.pool = provisioning.pool
+        names.pool = provisioning.pool
         try:
             await alerts.load_settings()
         except Exception as e:  # e.g. migration 006 not applied yet: keep the defaults
             print(f"alert settings not loaded: {e}", flush=True)
+        try:
+            await names.load()
+        except Exception as e:  # e.g. migration 007 not applied yet: no names
+            print(f"device names not loaded: {e}", flush=True)
     task = asyncio.create_task(broadcaster.run())
     yield
     task.cancel()
@@ -106,6 +113,7 @@ class RevalidatedStatic(StaticFiles):
 app.mount("/static", RevalidatedStatic(directory=STATIC), name="static")
 app.include_router(provisioning.router)
 app.include_router(alerts.router)
+app.include_router(names.router)
 
 
 def to_json(r: dict) -> str:
@@ -115,11 +123,14 @@ def to_json(r: dict) -> str:
 @app.get("/api/readings")
 async def readings(minutes: int = Query(60, ge=1, le=10080)) -> list[dict]:
     async with pool.connection() as conn:
-        return await (await conn.execute(
+        rows = await (await conn.execute(
             f"""SELECT {COLUMNS} FROM readings
                 WHERE received_at > now() - make_interval(mins => %s) AND received_at >= %s
                 ORDER BY id""", (minutes, DUMMY_DATA_BEFORE),
         )).fetchall()
+    for r in rows:
+        r["label"] = names.label(r["address"], r["board"])  # the device's fleet name, else hs-NN
+    return rows
 
 
 @app.get("/api/stream")
@@ -137,6 +148,7 @@ async def stream(request: Request, last_event_id: int | None = Header(None)) -> 
                         f"SELECT {COLUMNS} FROM readings WHERE id > %s ORDER BY id",
                         (last_event_id,))).fetchall()
                 for r in missed:
+                    r["label"] = names.label(r["address"], r["board"])
                     sent = r["id"]
                     yield f"id: {r['id']}\nevent: reading\ndata: {to_json(r)}\n\n"
             while not await request.is_disconnected():

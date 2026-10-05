@@ -79,7 +79,7 @@ export function mount({ root, metric, title, unit, key, threshold = () => null, 
         value: (u, v) => (v == null ? "–" : `${v} ${unit}`),
       }))],
       legend: { show: false },
-      cursor: { drag: { x: true, y: false } },
+      cursor: { drag: { x: false, y: false } },
       plugins: withLine ? [thresholdPlugin()] : [],
     }, aligned(state.series, order, metric), plot);
     state.boardsKey = order.join(",");
@@ -152,7 +152,7 @@ export function mount({ root, metric, title, unit, key, threshold = () => null, 
     state.es = new EventSource("/api/stream");
     state.es.addEventListener("reading", e => {
       const r = JSON.parse(e.data);
-      const s = (state.series[r.board] ??= { t: [], temp: [], rssi: [] });
+      const s = (state.series[r.label ?? r.board] ??= { t: [], temp: [], rssi: [] });
       s.t.push(Date.parse(r.received_at) / 1000);
       s.temp.push(r.temp_c);
       s.rssi.push(r.rssi);

@@ -68,6 +68,8 @@
   .fld { margin: 8px 0 0; }
   .fld-head { display: flex; align-items: center; gap: 8px; font-size: .88rem; }
   .fld-head label { flex: 1; }
+  label.fld-head { cursor: pointer; justify-content: flex-start; }
+  label.fld-head input { margin: 0; }
   .fld-ctl { display: flex; gap: 8px; align-items: center; margin-top: 4px; }
   .fld-ctl input[type=range] { flex: 1; }
   .fld-ctl input[type=number] { width: 7.5em; padding: 6px 8px; }
@@ -173,10 +175,10 @@
       <label class="field" for="version">Version</label>
       <select id="version"></select>
       <div id="rf-wrap">
-        <label class="field" for="rf-stack">Radio stack (RF module) version</label>
+        <label class="field" for="rf-stack">RF Module firmware version</label>
         <select id="rf-stack"></select>
       </div>
-      <label class="muted" style="display:block;margin-top:8px"><input type="checkbox" id="keep-offline"> Keep this version on the phone for offline use</label>
+      <label class="muted" style="display:block;margin-top:8px"><input type="checkbox" id="keep-offline"> Save this firmware for offline use - <span id="offline-size"></span></label>
       <div class="muted" id="version-info"></div>
     </section>
     <section class="card" id="config-card">
@@ -187,8 +189,7 @@
       <label class="field" for="config">Start from</label>
       <select id="config"></select>
       <div class="row">
-        <button class="secondary small" id="load-file">Load from file…</button>
-        <span class="muted">a config script ({"calls": [...]}) or a whole exported profile</span>
+        <button class="secondary small" id="load-file">Or Load from file</button>
         <input type="file" id="file-input" accept="application/json,.json" class="hidden">
       </div>
       <div id="builder"></div>
@@ -203,7 +204,7 @@
         <button class="grow" id="save-profile">Save as profile…</button>
       </div>
       <div class="row"><button class="danger small" id="archive-config">Archive this config</button></div>
-      <details class="ref"><summary>Methods for this version</summary><ul id="methods-ref"></ul></details>
+      <details class="ref"><summary>Expand for full detail of methods for this version</summary><ul id="methods-ref"></ul></details>
     </section>
   </div>
 
