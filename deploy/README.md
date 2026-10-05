@@ -21,6 +21,7 @@ docker compose exec db psql -U home_state -c \
 ## k3s
 
 Needs k3s and the local registry on `127.0.0.1:5000` (both tracked in `~/repo/sysadmin/TODO.md`). Set `KUBECONFIG=~/.kube/config`.
+Host-side k3s settings (`config.yaml`, graceful node shutdown, start-after-Docker) are in [`k3s/`](k3s/README.md). Apply them with `sudo sh deploy/k3s/apply.sh`.
 
 ```sh
 # one-time: namespace + DB password (the Secret is never committed)
