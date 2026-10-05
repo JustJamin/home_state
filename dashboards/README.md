@@ -44,8 +44,12 @@ All of them hide the dummy temperatures from before 2026-10-04 20:30:52 UTC. Str
 - **One** Postgres poller fans out to every connected browser, so N browsers cost one query a second.
 - The browser's `EventSource` reconnects automatically and sends `Last-Event-ID`. The server replays exactly the rows that browser missed, with no duplicates.
 - About 150 lines of vanilla JS: uPlot charts (drag to zoom, double-click to reset), new table rows flash as they arrive, a connection-status dot, and light/dark colours from `prefers-color-scheme`.
-- uPlot is loaded from the jsDelivr CDN, so the viewing browser needs internet access.
+- uPlot is vendored in `static/vendor/` (v1.6.32, MIT), so no CDN is needed.
 - *Good for:* the smallest footprint and full control, and it's the easiest to embed anywhere. *Trade-off:* you write everything yourself.
+- **Provisioning (v1.1.0):** `/provision` uploads firmware to a node over **Web Bluetooth**. Use Chrome on Android over HTTPS (https://lenovo.tailc2dfa5.ts.net/provision, via `tailscale serve`).
+  - Pick a release (from `/api/firmware`) or a local `.bin`, choose the node in Chrome's device chooser, and flash. The page shows progress with KB/s, holds a screen wake lock, and verifies the new version after the node reboots.
+  - Protocol: [docs/ota-protocol.md](../docs/ota-protocol.md).
+  - Tests: `pytest test_app.py` (firmware API) and `node test_ota.mjs` (`ota.js` against a simulated node with lost and failing writes).
 
 ## Other options not built here
 
