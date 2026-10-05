@@ -5,14 +5,9 @@ menu "home_state advertiser"
         range 0 255
         default 1
         help
-            Unique per board. Goes into the payload and the device name (hs-<id>).
-
-    config HS_UPDATE_INTERVAL_MS
-        int "Payload update interval (ms)"
-        range 1000 600000
-        default 5000
-        help
-            How often the counter and dummy readings are refreshed in the advert.
+            Board ID stored in NVS the first time a board boots with empty NVS.
+            Goes into the payload and the device name (hs-<id>). Change it later
+            with the board.set_id JSON-RPC method.
 
     config HS_TEST_NEVER_VALID
         bool "TEST: never mark a new OTA image valid"

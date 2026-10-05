@@ -3,6 +3,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+#include "cJSON.h"
 #include "host/ble_uuid.h"
 
 /* home_state BLE OTA service (proto v1). Spec: docs/ota-protocol.md */
@@ -21,3 +22,7 @@ void ota_on_subscribe(uint16_t attr_handle, bool notify);
 /* Rollback bookkeeping: call once at boot, and mark valid once the app has proven itself. */
 void ota_boot_check(void);
 void ota_mark_valid(void);
+
+/* For JSON-RPC: add partition/state/rolled_back_from to obj; OTA transfer status. */
+void ota_add_info(cJSON *obj);
+cJSON *ota_status_json(void);
