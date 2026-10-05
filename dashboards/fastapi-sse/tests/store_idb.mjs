@@ -59,4 +59,18 @@ const ok = m => { passed++; console.log(`ok  ${m}`); };
   ok("an open older tab steps aside for the upgrade");
 }
 
+{ // E: an OLD copy of the app (no versionchange handler) holds the database: the new one
+  // reports "blocked" (the page tells the user to close it) and carries on once it's closed
+  const oldTab = await raw("E", 1, v1Schema);
+  let blocked = 0;
+  const opening = IdbStore.open("E", { onBlocked: () => { blocked++; } });
+  await new Promise(r => setTimeout(r, 200));
+  assert.equal(blocked, 1, "blocked upgrade reported");
+  oldTab.close(); // the user closes the other copy
+  const s = await opening;
+  assert.ok(s.db.objectStoreNames.contains("gateway"));
+  s.db.close();
+  ok("blocked by an old copy: reported, then completes when it closes");
+}
+
 console.log(`\n${passed} IndexedDB checks passed`);

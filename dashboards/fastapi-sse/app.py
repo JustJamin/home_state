@@ -21,6 +21,7 @@ from pathlib import Path
 from fastapi import FastAPI, Header, Query, Request
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel, Field
 from psycopg.rows import dict_row
 from psycopg_pool import AsyncConnectionPool
 
@@ -185,6 +186,21 @@ async def fleet_metrics(hours: int = Query(24, ge=1, le=720)) -> list[dict]:
         r["last_seen"] = r["last_seen"].isoformat()
         r["window_hours"] = hours
     return rows
+
+
+class ClientLog(BaseModel):
+    kind: str = Field(max_length=20)
+    message: str = Field(max_length=500)
+    stack: str = Field("", max_length=2000)
+    step: str | None = Field(None, max_length=100)
+    ua: str | None = Field(None, max_length=300)
+
+
+@app.post("/api/client-log")
+async def client_log(entry: ClientLog) -> dict:
+    """Start-up errors from the provisioning app (provision.html's guard), into the pod log."""
+    print(f"client-log {entry.kind} step={entry.step!r}: {entry.message} | {entry.ua}\n{entry.stack}", flush=True)
+    return {"ok": True}
 
 
 @app.get("/api/stats")

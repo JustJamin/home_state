@@ -24,7 +24,8 @@ export class IdbStore {
   /** Open the database, creating any missing object stores. Self-healing: if the database is
    *  already at (or past) our version but a store is missing (e.g. an older copy of this file
    *  opened it), reopen one version higher to add it. */
-  static async open(name = "home_state") {
+  static async open(name = "home_state", { onBlocked = () => {} } = {}) {
+    IdbStore.onBlocked = onBlocked;
     let db = await IdbStore.#openAt(name, DB_VERSION);
     const missing = Object.keys(STORES).filter(s => !db.objectStoreNames.contains(s));
     if (missing.length) {
@@ -55,7 +56,8 @@ export class IdbStore {
         if (req.error?.name === "VersionError") resolve(IdbStore.#openAt(name, undefined));
         else reject(req.error);
       };
-      req.onblocked = () => console.warn("IndexedDB upgrade waiting for another tab to close");
+      // another copy of the app (an old tab) holds the database open at an older version
+      req.onblocked = () => { console.warn("IndexedDB upgrade waiting for another tab to close"); IdbStore.onBlocked(); };
     });
   }
   #os(name, mode = "readonly") { return this.db.transaction(name, mode).objectStore(name); }

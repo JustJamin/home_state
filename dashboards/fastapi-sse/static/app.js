@@ -46,7 +46,16 @@ const compact = p => (p === undefined ? "" : JSON.stringify(p));
 
 // ---------------- startup ----------------
 
-const store = await IdbStore.open();
+window.__step = "opening local storage";
+const store = await IdbStore.open("home_state", {
+  onBlocked: () => {
+    window.__step = "waiting for another copy of the app to close";
+    window.__showFatal?.("Updating the app's local storage: close any other copy of this app (another Chrome " +
+                         "tab or the installed app) and this one will carry on.");
+  },
+});
+window.__step = "starting";
+document.getElementById("fatal")?.style.setProperty("display", "none");
 const sync = new Sync(store);
 const catalogue = new Catalogue(store);
 const ui = {
@@ -788,9 +797,11 @@ async function refreshAll() {
   if (fleetVisible()) await renderFleet();
 }
 
+window.__step = "rendering";
 setMode("form");
 await sync.refreshPending();
 await refreshAll();
 await renderGateway();
+window.__appReady = true; // the start-up guard in provision.html stands down
 renderAlerts();
 syncNow();

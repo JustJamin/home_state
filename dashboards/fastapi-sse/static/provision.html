@@ -235,6 +235,45 @@
   </div>
 </main>
 
+<div id="fatal" class="result bad" style="position:fixed;left:12px;right:12px;bottom:12px;z-index:50;display:none;white-space:pre-wrap"></div>
+<script>
+  // Startup guard: shows (and reports to the server log) any error before or during app start,
+  // and a hint if start-up stalls, instead of a page that looks fine but does nothing.
+  (function () {
+    window.__step = "loading";
+    function show(msg) {
+      var el = document.getElementById("fatal");
+      el.style.display = "block";
+      el.textContent = msg;
+    }
+    window.__showFatal = show;
+    function report(kind, msg, stack) {
+      try {
+        fetch("/api/client-log", { method: "POST", headers: { "Content-Type": "application/json" }, keepalive: true,
+          body: JSON.stringify({ kind: kind, message: String(msg).slice(0, 500), stack: String(stack || "").slice(0, 2000),
+                                 step: window.__step, ua: navigator.userAgent }) });
+      } catch (e) { /* offline */ }
+    }
+    window.__report = report;
+    window.addEventListener("error", function (e) {
+      if (window.__appReady) return;
+      show("The app failed to start: " + (e.message || e) + "\n(step: " + window.__step + ")");
+      report("error", e.message, e.error && e.error.stack);
+    });
+    window.addEventListener("unhandledrejection", function (e) {
+      if (window.__appReady) return;
+      var r = e.reason || {};
+      show("The app failed to start: " + (r.message || r) + "\n(step: " + window.__step + ")");
+      report("rejection", r.message || r, r.stack);
+    });
+    setTimeout(function () {
+      if (window.__appReady) return;
+      show("Still starting after 8 s (step: " + window.__step + "). If another copy of this app is open " +
+           "(a Chrome tab or the installed app), close it; this one will then carry on.");
+      report("stall", "startup stalled", "");
+    }, 8000);
+  })();
+</script>
 <script type="module" src="/static/app.js"></script>
 </body>
 </html>
