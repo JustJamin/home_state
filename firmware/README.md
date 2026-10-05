@@ -3,6 +3,7 @@
 ESP-IDF v6.1 + NimBLE firmware for the XIAO ESP32-C6 (ESP32-C6FH4, 4 MB flash).
 - **Readings:** it reads the chip's internal temperature sensor and broadcasts the v1 payload (see the top-level README) in legacy adverts about once a second, refreshing the payload every 5 s.
 - **Updates over the air:** it accepts firmware over BLE ([docs/ota-protocol.md](../docs/ota-protocol.md)) from the dashboard's provisioning page or `tools/ota_client.py`.
+- **JSON-RPC** over USB serial and BLE ([docs/jsonrpc.md](../docs/jsonrpc.md)): device info, settings (`config.set`, persisted in NVS), LED, board ID, reboot. Try `tools/.venv/bin/python tools/rpc_client.py --serial /dev/ttyACM0 device.info`.
 
 Needs ESP-IDF in `~/esp/esp-idf` (tracked in `~/repo/sysadmin/TODO.md`).
 
@@ -39,7 +40,7 @@ firmware/release.sh                 # refuses a dirty or untagged tree; --dev fo
 deploy/push-dashboards.sh fastapi-sse
 ```
 
-`release.sh` copies `hs_advertiser-<version>.bin` to `dashboards/fastapi-sse/firmware/` (gitignored, baked into the dashboard image) and to `~/home_state-firmware/` on lenovo (the durable copy).
+`release.sh` publishes `<app>/<version>/{firmware.bin, default.config.json, methods.json}` to `dashboards/fastapi-sse/firmware/` (gitignored, baked into the dashboard image) and to `~/home_state-firmware/` on lenovo (the durable copy). Update `config/default.json` and `config/methods.json` with the firmware: `methods.json` must match `main/rpc.c` and `main/settings.c`.
 
 ## Testing OTA from lenovo
 

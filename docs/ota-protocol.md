@@ -21,6 +21,7 @@ Base UUID `2727b0xx-1ada-46ff-8cde-9e8f32a32c1a`:
 | INFO | `2727b001-…` | read | JSON (below) |
 | CTRL | `2727b002-…` | write, notify | commands → node, replies ← node |
 | DATA | `2727b003-…` | write without response, write | `[u32 offset][image bytes]` |
+| RPC | `2727b004-…` | write, notify | JSON-RPC 2.0, framed (firmware v1.2.0+; see [jsonrpc.md](jsonrpc.md)) |
 
 INFO:
 ```json
