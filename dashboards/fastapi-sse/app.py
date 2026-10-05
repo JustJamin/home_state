@@ -24,11 +24,12 @@ from fastapi.staticfiles import StaticFiles
 from psycopg.rows import dict_row
 from psycopg_pool import AsyncConnectionPool
 
+import alerts
 import provisioning
 
 DUMMY_DATA_BEFORE = datetime(2026, 10, 4, 20, 30, 52, tzinfo=timezone.utc)
-COLUMNS = """id, received_at, 'hs-' || lpad(board_id::text, 2, '0') AS board,
-             counter, temp_c, rssi, uptime_s"""
+COLUMNS = """id, received_at, 'hs-' || lpad(board_id::text, 2, '0') AS board, address,
+             counter, temp_c, rssi, uptime_s, source"""
 STATIC = Path(__file__).parent / "static"
 
 pool = AsyncConnectionPool(os.environ["DATABASE_URL"], min_size=1, max_size=4, open=False,
@@ -62,6 +63,9 @@ class Broadcaster:
                 self.last_id = r["id"]
                 for q in self.subscribers:
                     q.put_nowait(r)
+                events = alerts.engine.observe(r["address"], r["board"], r["temp_c"])
+                if events:
+                    asyncio.create_task(alerts.notify(events))
 
 
 broadcaster = Broadcaster()
@@ -70,8 +74,14 @@ broadcaster = Broadcaster()
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     await pool.open()
+    provisioning.readings_pool = pool
     if provisioning.pool:
         await provisioning.pool.open()
+        alerts.pool = provisioning.pool
+        try:
+            await alerts.load_settings()
+        except Exception as e:  # e.g. migration 006 not applied yet: keep the defaults
+            print(f"alert settings not loaded: {e}", flush=True)
     task = asyncio.create_task(broadcaster.run())
     yield
     task.cancel()
@@ -83,6 +93,7 @@ async def lifespan(_: FastAPI):
 app = FastAPI(title="home_state · FastAPI + SSE", lifespan=lifespan)
 app.mount("/static", StaticFiles(directory=STATIC), name="static")
 app.include_router(provisioning.router)
+app.include_router(alerts.router)
 
 
 def to_json(r: dict) -> str:

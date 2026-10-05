@@ -145,6 +145,7 @@ class Deployment(BaseModel):
     app: str
     version: str
     from_version: str | None = None
+    from_app: str | None = None  # set when the deploy switched the node to another app
     rf_stack: str | None = None
     ble_address: str | None = Field(None, pattern=r"^([0-9A-F]{2}:){5}[0-9A-F]{2}$")
     flashed: bool
@@ -230,6 +231,62 @@ async def sync_push(body: SyncPush) -> dict:
                         f"VALUES ({', '.join(['%s'] * len(cols))}) ON CONFLICT (id) DO NOTHING", vals)
                     accepted[table].append(str(rec.id))
     return {"accepted": accepted, "rejected": rejected}
+
+
+# ---------------- phone gateway ----------------
+
+readings_pool = None  # app.py's read-only pool on readings, for the duplicate check (set at startup)
+DUP_WINDOW_S = 30
+
+
+class GatewayReading(BaseModel):
+    address: str = Field(pattern=r"^([0-9A-F]{2}:){5}[0-9A-F]{2}$")
+    board_id: int = Field(ge=0, le=255)
+    name: str | None = None
+    counter: int = Field(ge=0, le=65535)
+    temp_c: float | None = None
+    uptime_s: int | None = Field(None, ge=0)
+    received_at: datetime  # computed on the phone from node uptime + the phone clock
+
+
+class GatewayUpload(BaseModel):
+    readings: list[GatewayReading] = Field(max_length=2000)
+    client: str | None = None
+
+
+@router.post("/api/gateway/readings")
+async def gateway_upload(body: GatewayUpload) -> dict:
+    """Readings a phone collected from a node over BLE. A reading the store already has
+    (same board address and counter within 30 s, e.g. the scanner heard the advert too,
+    or the phone re-sent it) is skipped, so uploads are safe to repeat."""
+    if pool is None or readings_pool is None:
+        raise HTTPException(503, "gateway store not configured")
+    if not body.readings:
+        return {"inserted": 0, "duplicates": 0}
+    times = [r.received_at for r in body.readings]
+    async with readings_pool.connection() as conn:
+        existing = await (await conn.execute(
+            """SELECT address, counter, received_at FROM readings
+               WHERE address = ANY(%s) AND received_at BETWEEN %s - make_interval(secs => %s) AND %s + make_interval(secs => %s)""",
+            (list({r.address for r in body.readings}), min(times), DUP_WINDOW_S, max(times), DUP_WINDOW_S))).fetchall()
+    seen = {}
+    for e in existing:
+        seen.setdefault((e["address"], e["counter"]), []).append(e["received_at"])
+    fresh = []
+    for r in body.readings:
+        key = (r.address, r.counter)
+        if any(abs((t - r.received_at).total_seconds()) <= DUP_WINDOW_S for t in seen.get(key, [])):
+            continue
+        seen.setdefault(key, []).append(r.received_at)  # also dedupes within this upload
+        fresh.append(r)
+    if fresh:
+        async with pool.connection() as conn:
+            async with conn.cursor() as cur:
+                await cur.executemany(
+                    """INSERT INTO readings (received_at, board_id, address, name, rssi, version, counter, temp_c, uptime_s, source)
+                       VALUES (%s, %s, %s, %s, NULL, 1, %s, %s, %s, 'gateway')""",
+                    [(r.received_at, r.board_id, r.address, r.name, r.counter, r.temp_c, r.uptime_s) for r in fresh])
+    return {"inserted": len(fresh), "duplicates": len(body.readings) - len(fresh)}
 
 
 @router.get("/api/fleet")

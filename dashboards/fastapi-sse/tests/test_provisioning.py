@@ -65,7 +65,7 @@ def test_default_config_is_valid():
 # ---------------- catalogue ----------------
 
 @pytest.fixture(scope="module")
-def client(tmp_path_factory):
+def client(tmp_path_factory, app_client):
     """One app (and one lifespan) for the module: psycopg pools can't be reopened once closed."""
     tmp_path = tmp_path_factory.mktemp("catalogue")
     if not IMAGE.exists():
@@ -94,15 +94,9 @@ def client(tmp_path_factory):
     (tmp_path / "secret.txt").write_text("nope")
 
     import provisioning
-    import app as appmod
-    from fastapi.testclient import TestClient
     saved, provisioning.FIRMWARE_DIR = provisioning.FIRMWARE_DIR, tmp_path
     try:
-        if PG:
-            with TestClient(appmod.app) as c:  # runs lifespan: opens both pools
-                yield c, ver
-        else:
-            yield TestClient(appmod.app), ver
+        yield app_client, ver
     finally:
         provisioning.FIRMWARE_DIR = saved
 
