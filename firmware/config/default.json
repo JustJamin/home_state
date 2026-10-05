@@ -1,0 +1,15 @@
+{
+  "app": "hs_advertiser",
+  "name": "default",
+  "description": "Factory settings: readings every 5 s, advert every 1 s, LED blinking at 1 Hz.",
+  "calls": [
+    {
+      "method": "config.set",
+      "params": {
+        "update_interval_ms": 5000,
+        "adv_interval_ms": 1000,
+        "led": {"mode": "blink", "blink_hz": 1}
+      }
+    }
+  ]
+}

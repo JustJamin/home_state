@@ -1,3 +1,5 @@
 Dockerfile
 __pycache__/
 test_*.py
+test_*.mjs
+tests/
