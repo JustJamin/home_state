@@ -6,7 +6,7 @@ as the phone's provisioning page, so the firmware can be tested without
 the UI. Fault injection flags exercise the node's error paths.
 
     scanner/.venv/bin/python tools/ota_client.py info
-    scanner/.venv/bin/python tools/ota_client.py flash firmware/build/hs_advertiser.bin
+    scanner/.venv/bin/python tools/ota_client.py flash firmware/build-single-blink/single-blink.bin
     ... flash IMAGE --bad-hash | --truncate N | --drop-chunk N | --disconnect-at BYTES | --with-response
 """
 
@@ -26,7 +26,7 @@ SVC, INFO, CTRL, DATA = (BASE.format(i) for i in range(4))
 CMD_BEGIN, CMD_END, CMD_APPLY, CMD_ABORT, CMD_SYNC = 1, 2, 3, 4, 5
 RSP_BEGIN, RSP_END, RSP_APPLY, RSP_ABORT, RSP_SYNC, RSP_NAK = 0x81, 0x82, 0x83, 0x84, 0x85, 0x91
 STATUS = {0: "OK", 1: "BAD_STATE", 2: "TOO_BIG", 3: "FLASH", 4: "BAD_OFFSET", 5: "HASH",
-          6: "IMAGE_INVALID", 7: "WRONG_PROJECT", 8: "BAD_CMD"}
+          6: "IMAGE_INVALID", 7: "WRONG_PROJECT", 8: "BAD_CMD", 9: "WRONG_FAMILY"}
 
 
 class OtaError(Exception):

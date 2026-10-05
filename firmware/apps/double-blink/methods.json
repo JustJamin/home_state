@@ -1,0 +1,162 @@
+{
+  "app": "double-blink",
+  "methods_version": 1,
+  "description": "double-blink: Two quick flashes then a pause, repeated. Shape it with the flash, gap and pause lengths.",
+  "rf_stacks": {
+    "versions": [
+      "v1",
+      "v2"
+    ],
+    "default": "v1",
+    "description": "Radio stack versions this firmware supports. Chosen per profile; recorded, not yet sent to the node."
+  },
+  "methods": {
+    "config.set": {
+      "description": "Change the node's settings. Only the settings you include are changed; everything else keeps its current value. Changes apply immediately and survive reboots. The 'led' settings belong to the app.",
+      "params": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "update_interval_ms": {
+            "type": "integer",
+            "minimum": 1000,
+            "maximum": 600000,
+            "description": "How often the node takes a new reading (temperature, counter) and puts it in its advert. Shorter = fresher data on the dashboard; longer = less radio activity.",
+            "default": 5000
+          },
+          "adv_interval_ms": {
+            "type": "integer",
+            "minimum": 100,
+            "maximum": 10240,
+            "description": "How often the node broadcasts its advert. Shorter makes it easier for the scanner to catch every reading (and quicker to find for deploys); longer saves power.",
+            "default": 1000
+          },
+          "led": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "enabled": {
+                "type": "boolean",
+                "default": true,
+                "description": "LED on/off"
+              },
+              "flash_ms": {
+                "type": "integer",
+                "minimum": 20,
+                "maximum": 500,
+                "default": 80,
+                "description": "Length of each of the two flashes"
+              },
+              "gap_ms": {
+                "type": "integer",
+                "minimum": 20,
+                "maximum": 1000,
+                "default": 120,
+                "description": "Dark time between the two flashes"
+              },
+              "pause_ms": {
+                "type": "integer",
+                "minimum": 200,
+                "maximum": 10000,
+                "default": 1000,
+                "description": "Dark time after the pair"
+              }
+            },
+            "description": "The LED pattern that identifies this app."
+          }
+        }
+      }
+    },
+    "config.reset": {
+      "description": "Put every setting back to this app's factory defaults.",
+      "params": null
+    },
+    "device.identify": {
+      "description": "Flash the LED rapidly for a while so you can tell which physical board this is.",
+      "params": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "seconds": {
+            "type": "number",
+            "minimum": 1,
+            "maximum": 300,
+            "default": 10,
+            "description": "How long to flash for."
+          }
+        }
+      }
+    },
+    "device.reboot": {
+      "description": "Restart the node. The deploy waits for it to come back before running the next call.",
+      "params": null,
+      "reboots": true
+    },
+    "board.set_id": {
+      "description": "Set this node's board number, which names it (hs-<id>) in adverts, readings and the fleet. Per-device, so it can't go in a shared config: use 'Set board ID on deploy' instead.",
+      "params": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id"
+        ],
+        "properties": {
+          "id": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 255,
+            "default": 1,
+            "description": "Board number, 0-255; shown as hs-01, hs-02, ..."
+          }
+        }
+      },
+      "per_device": true
+    },
+    "config.get": {
+      "description": "Current settings.",
+      "params": null
+    },
+    "device.info": {
+      "description": "Device ID, BLE address, app, firmware, partition, board ID, family.",
+      "params": null,
+      "script": false
+    },
+    "device.status": {
+      "description": "Uptime, heap, reset reason, temperature.",
+      "params": null,
+      "script": false
+    },
+    "ota.status": {
+      "description": "OTA transfer state.",
+      "params": null,
+      "script": false
+    },
+    "rpc.discover": {
+      "description": "List of methods.",
+      "params": null,
+      "script": false
+    },
+    "readings.read": {
+      "description": "Buffered readings for the phone gateway (last hour), oldest first, paged.",
+      "params": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "boot_id": {
+            "type": "number"
+          },
+          "after_uptime_s": {
+            "type": "number",
+            "minimum": 0
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 50
+          }
+        }
+      },
+      "script": false
+    }
+  }
+}

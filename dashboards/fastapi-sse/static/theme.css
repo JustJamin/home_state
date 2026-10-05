@@ -44,3 +44,19 @@ button.secondary:not(:disabled):hover, button.danger:not(:disabled):hover { back
 select, input[type=text], input[type=number], textarea { background: var(--field); color: var(--fg); border-color: var(--line); }
 input[type=range], input[type=checkbox] { accent-color: var(--accent); }
 ::selection { background: var(--lacuna-purple); color: var(--lacuna-white); }
+
+/* shared by the dashboard and Admin: segmented buttons, live charts (livechart.js), board chips */
+.seg { display: inline-flex; border: 1px solid var(--line); border-radius: 9px; overflow: hidden; }
+.seg button { background: transparent; color: var(--muted); border: 0; border-radius: 0; padding: 7px 14px; font: inherit; font-weight: 600; cursor: pointer; }
+.seg button.active { background: var(--accent); color: var(--on-accent); }
+.seg button:not(.active):not(:disabled):hover { background: color-mix(in srgb, var(--hover) 30%, transparent); color: var(--fg); }
+  .lc-bar { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin: 14px 0 8px; }
+  .lc-chips { display: flex; flex-wrap: wrap; gap: 8px; margin: 8px 0 12px; }
+  .chip { display: inline-flex; align-items: center; gap: 8px; padding: 7px 12px; border-radius: 99px; cursor: pointer;
+          border: 1px solid var(--line); background: var(--card); color: var(--muted); font: inherit; text-align: left; }
+  .chip .sw { width: 12px; height: 12px; border-radius: 50%; border: 2px solid var(--c); background: transparent; flex: none; }
+  .chip.on { color: var(--fg); border-color: var(--c); }
+  .chip.on .sw { background: var(--c); }
+  .chip .cv { font-size: .82rem; color: var(--muted); font-variant-numeric: tabular-nums; }
+  .chip:not(.on) b { text-decoration: line-through; }
+  .u-title { color: var(--fg); font-size: 1rem; }

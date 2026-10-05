@@ -1,6 +1,7 @@
 // One-touch deploy: put a profile (app + version + config script) onto a node.
 //   1. identify the node (device.info over JSON-RPC; INFO for pre-RPC firmware)
-//   2. flash the profile's firmware if the node runs a different version
+//   2. flash the profile's firmware if the node runs a different app or version (switching
+//      apps needs a node-family firmware on the node: v1.3.1+, or the hs_advertiser bridge)
 //   3. optionally set the board ID (per node, never part of the shared config)
 //   4. run the config script call by call, reconnecting after a reboot
 //   5. record the deployment (store + outbox) for the fleet record
@@ -29,10 +30,11 @@ export async function deploy({
   async function identify() {
     if (node.rpc) {
       const i = await node.rpc.call("device.info");
-      return { app: i.app, version: i.version, device_id: i.device_id, board_id: i.board_id, ble_address: i.ble_address ?? null };
+      return { app: i.app, version: i.version, device_id: i.device_id, board_id: i.board_id, ble_address: i.ble_address ?? null,
+               family: i.family ?? null };
     }
     const i = await node.readInfo(); // pre-RPC firmware: no device ID
-    return { app: i.proj, version: i.fw, device_id: null, board_id: i.board, ble_address: null };
+    return { app: i.proj, version: i.fw, device_id: null, board_id: i.board, ble_address: null, family: null };
   }
 
   async function reconnect(why) {
@@ -49,19 +51,22 @@ export async function deploy({
     rec.board_id = who.board_id;
     rec.ble_address = who.ble_address;
     log(`node: ${who.app} ${who.version}${who.device_id ? `, device ${who.device_id}` : ""}, board ${who.board_id}`);
-    if (who.app !== profile.app) {
-      throw new DeployError(`node runs ${who.app}, but the profile is for ${profile.app}`);
+    const switching = who.app !== profile.app;
+    rec.from_app = switching ? who.app : null; // only recorded when the deploy changes the node's app
+    if (switching && !who.family) {
+      throw new DeployError(`node runs ${who.app} ${who.version}, which can't switch apps: deploy an hs_advertiser v1.3.1+ profile to it first`);
     }
 
-    if (who.version !== profile.version) {
+    if (switching || who.version !== profile.version) {
       progress({ step: "flash" });
-      log(`flashing ${profile.app} ${profile.version} (node has ${who.version})`);
+      log(switching ? `switching app: ${who.app} → ${profile.app} ${profile.version}`
+                    : `flashing ${profile.app} ${profile.version} (node has ${who.version})`);
       const image = await catalogue.firmware(profile.app, profile.version);
       await flashFn(node, image, { onLog: log, onProgress: p => progress({ step: "flash", ...p }) });
       rec.flashed = true;
       const info = await reconnect("reboot into new firmware");
-      if (info.fw !== profile.version) {
-        throw new DeployError(`node came back on ${info.fw}${info.rolled_back_from ? ` (rolled back from ${info.rolled_back_from})` : ""}`);
+      if (info.proj !== profile.app || info.fw !== profile.version) {
+        throw new DeployError(`node came back on ${info.proj} ${info.fw}${info.rolled_back_from ? ` (rolled back from ${info.rolled_back_from})` : ""}`);
       }
       who = await identify();
       rec.device_id = who.device_id;

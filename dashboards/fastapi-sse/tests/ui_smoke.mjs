@@ -6,12 +6,15 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { JSDOM } from "jsdom";
 import "fake-indexeddb/auto";
+const { validateScript: validateScriptFor } = await import(new URL("../static/schema.js", import.meta.url).href);
 
 const here = new URL("..", import.meta.url);
 const repo = new URL("../../", here);
-const methods = JSON.parse(readFileSync(new URL("firmware/config/methods.json", repo)));
-const defaults = JSON.parse(readFileSync(new URL("firmware/config/default.json", repo)));
-const BASE = "https://lenovo.test/provision";
+const methods = JSON.parse(readFileSync(new URL("firmware/apps/hs_advertiser/methods.json", repo)));
+const defaults = JSON.parse(readFileSync(new URL("firmware/apps/hs_advertiser/default.json", repo)));
+const sbMethods = JSON.parse(readFileSync(new URL("firmware/apps/single-blink/methods.json", repo)));
+const sbDefaults = JSON.parse(readFileSync(new URL("firmware/apps/single-blink/default.json", repo)));
+const BASE = "https://lenovo.test/admin";
 const VER = "v1.3.0-test";
 
 // ---------- page ----------
@@ -26,7 +29,8 @@ window.HTMLElement.prototype.scrollIntoView = () => {};
 const alerts = [];
 window.alert = globalThis.alert = m => alerts.push(m);
 let promptAnswers = [];
-window.prompt = globalThis.prompt = () => promptAnswers.shift() ?? null;
+const promptDefaults = [];
+window.prompt = globalThis.prompt = (msg, def) => { promptDefaults.push(def); return promptAnswers.shift() ?? null; };
 window.confirm = globalThis.confirm = () => true;
 
 // ---------- fake server ----------
@@ -43,6 +47,10 @@ const serverDeployments = [
 const serverProfiles = [{ id: "p-fast", name: "fast-blink", app: "hs_advertiser", version: VER, config_id: null, config_name: "default",
   script: { calls: defaults.calls }, rf_stack: "v1", created_at: iso(500), client: "test", seq: 3 }];
 const pushed = [];
+let alertCfg = { threshold_c: 35, clear_below_c: 34, changed_at: null, vapid_public_key: "BAAA", push_enabled: true };
+const savedThresholds = [];
+const fleetNames = { "58e6c513033c": "rack-1" };
+const gatewayUploads = [];
 const metrics = [
   { address: "58:E6:C5:13:03:3E", board_id: 1, last_seen: iso(2), rssi_last: -57, rssi_avg_1h: -56, readings: 17000, missed: 40, resets: 3, capture_pct: 99.77, uptime_s: 900, temp_c: 30 },
   { address: "58:E6:C5:19:50:8A", board_id: 2, last_seen: iso(1), rssi_last: -51, rssi_avg_1h: -52, readings: 700, missed: 0, resets: 1, capture_pct: 100, uptime_s: 300, temp_c: 31 },
@@ -52,7 +60,11 @@ const json = (v, status = 200) => new Response(JSON.stringify(v), { status, head
 globalThis.fetch = window.fetch = async (input, init = {}) => {
   const url = new URL(typeof input === "string" ? input : input.url, BASE);
   const p = url.pathname;
-  if (p === "/api/apps") return json([{ app: "hs_advertiser", versions: [{ version: VER, configurable: true, size: 680000, built: "2026-10-05T10:00:00", idf: "v6.1", sha256: "x" }] }]);
+  if (p === "/api/apps") return json([
+    { app: "hs_advertiser", versions: [{ version: VER, configurable: true, size: 680000, built: "2026-10-05T10:00:00", idf: "v6.1", sha256: "x" }] },
+    { app: "single-blink", versions: [{ version: VER, configurable: true, size: 680000, built: "2026-10-05T10:00:00", idf: "v6.1", sha256: "y" }] }]);
+  if (p === `/api/apps/single-blink/${VER}/methods.json`) return json(sbMethods);
+  if (p === `/api/apps/single-blink/${VER}/default.config.json`) return json(sbDefaults);
   if (p === `/api/apps/hs_advertiser/${VER}/methods.json`) return json(methods);
   if (p === `/api/apps/hs_advertiser/${VER}/default.config.json`) return json(defaults);
   if (p === `/api/apps/hs_advertiser/${VER}/firmware.bin`) return new Response(new Uint8Array(16));
@@ -63,6 +75,28 @@ globalThis.fetch = window.fetch = async (input, init = {}) => {
   }
   if (p === "/api/sync") return json({ seq: 3, configs: [], profiles: serverProfiles, deployments: serverDeployments, archives: [] });
   if (p === "/api/fleet/metrics") return json(metrics);
+  if (p === "/api/devices/names") return json(Object.entries(fleetNames).map(([device_id, name]) => ({ device_id, name, changed_at: new Date().toISOString() })));
+  const nm = p.match(/^\/api\/devices\/([0-9a-f]{12})\/name$/);
+  if (nm) {
+    const name = JSON.parse(init.body).name;
+    const clash = Object.entries(fleetNames).find(([id, n]) => id !== nm[1] && name && n.toLowerCase() === name.toLowerCase());
+    if (clash) return json({ detail: `'${name}' is already the name of device ${clash[0]}` }, 409);
+    if (name) fleetNames[nm[1]] = name; else delete fleetNames[nm[1]];
+    return json({ device_id: nm[1], name });
+  }
+  if (p === "/api/alerts/config" && init.method === "POST") {
+    const b = JSON.parse(init.body);
+    if (!(b.clear_below_c < b.threshold_c)) return json({ detail: "bad" }, 422);
+    alertCfg = { ...alertCfg, threshold_c: b.threshold_c, clear_below_c: b.clear_below_c, changed_at: new Date().toISOString() };
+    savedThresholds.push(b.threshold_c);
+    return json(alertCfg);
+  }
+  if (p === "/api/alerts/config") return json(alertCfg);
+  if (p === "/api/gateway/readings") {
+    const b = JSON.parse(init.body);
+    gatewayUploads.push(b.readings.length);
+    return json({ inserted: b.readings.length, duplicates: 0 });
+  }
   return json({ detail: "not found" }, 404);
 };
 const cacheStore = new Map();
@@ -95,14 +129,28 @@ await import(new URL("static/app.js", here).href);
 await waitFor(() => $("profile-select").options.length && $("profile-select").value === "p-fast", "initial sync of profiles");
 ok("app boots, syncs from the server, Deploy shows the synced profile");
 
+assert.equal(window.document.querySelector("h1").textContent, "⚙️ Admin");
+assert.deepEqual([...window.document.querySelectorAll("nav.tabs button")].map(b => b.textContent), ["Fleet", "Profile", "Deploy", "Gateway"]);
+assert.ok(!window.document.querySelector('[data-panel="fleet"]').classList.contains("hidden"), "opens on Fleet");
+ok("Admin: title, tab order Fleet / Profile / Deploy / Gateway, opens on Fleet");
+
 assert.ok($("unsupported").classList.contains("show"), "no Web Bluetooth -> explained, deploy disabled");
 assert.equal($("deploy-btn").disabled, true);
-assert.match($("profile-detail").textContent, /radio stack.*v1/s);
+assert.doesNotMatch($("profile-detail").textContent, /RF module firmware/, "details collapsed by default");
+const viewBtn = () => [...$("profile-detail").querySelectorAll("button")].find(b => /profile/.test(b.textContent));
+assert.equal(viewBtn().textContent, "View profile");
+click(viewBtn());
+await waitFor(() => /RF module firmware.*v1/s.test($("profile-detail").textContent), "profile expanded");
 assert.match($("profile-detail").textContent, /config\.set/);
-ok("Deploy: profile dropdown with a single detail card (firmware, radio stack, calls)");
+assert.ok([...$("profile-detail").querySelectorAll("button")].some(b => b.textContent === "Export JSON"));
+click(viewBtn());
+await waitFor(() => !/RF module firmware/.test($("profile-detail").textContent), "profile collapsed again");
+click(viewBtn());
+await waitFor(() => /RF module firmware/.test($("profile-detail").textContent), "expanded for later checks");
+ok("Deploy: profile dropdown; 'View profile' expands the details (firmware, radio stack, calls, export) and hides them");
 
 // ---------- Build with the form ----------
-tab("build");
+tab("profile");
 await waitFor(() => $("builder").querySelector(".call"), "builder render");
 assert.deepEqual([...$("rf-stack").options].map(o => o.value), ["v1", "v2"]);
 assert.equal($("rf-stack").value, "v1", "preset to the firmware's default stack");
@@ -131,6 +179,20 @@ await waitFor(() => editorScript().calls[0].method === "device.identify", "reord
 assert.deepEqual(editorScript().calls.map(c => c.method), ["device.identify", "config.set"]);
 assert.match($("validation").textContent, /✓ valid · 2 calls · unsaved changes/);
 ok("Form: add call and move it up; live validation stays green");
+
+// methods guide is descriptive
+const ref = $("methods-ref").textContent;
+assert.match(ref, /A config is a list of these calls, run in order on the node/);
+assert.match(ref, /update_interval_ms \(whole number 1000–600000 ms, default 5000 ms\)/);
+assert.match(ref, /How often the node takes a new reading/);
+assert.match(ref, /device\.reboot.*reboots the node.*Takes no parameters/s);
+assert.equal(window.document.querySelector("details.ref summary").textContent, "Expand for full detail of methods for this version");
+assert.equal($("config").options[0].textContent, "Default");
+assert.equal($("load-file").textContent, "Or Load from file");
+assert.match(window.document.querySelector('label[for="rf-stack"]').textContent, /^RF Module firmware version$/);
+assert.match($("keep-offline").parentElement.textContent, /Save this firmware for offline use - 664 KB/);
+assert.doesNotMatch($("builder").textContent, /Change the node's settings/, "method descriptions only in the guide");
+ok("Methods guide: what each call does, every setting's type, range, unit, default and meaning; Profile wording");
 
 // ---------- JSON fallback ----------
 click($("mode-json"));
@@ -166,11 +228,53 @@ promptAnswers = ["beacon RF2"];
 click($("save-profile"));
 await waitFor(() => [...$("profile-select").options].some(o => o.textContent === "beacon RF2"), "saved profile listed");
 await waitFor(() => $("profile-select").options[$("profile-select").selectedIndex]?.textContent === "beacon RF2", "new profile selected in Deploy");
-await waitFor(() => /beacon RF2.*radio stack\s*v2/s.test($("profile-detail").textContent), "detail card for the new profile");
+await waitFor(() => /beacon RF2.*RF module firmware\s*v2/s.test($("profile-detail").textContent), "detail card for the new profile");
 await waitFor(() => pushed.some(b => b.profiles?.some(p => p.name === "beacon RF2" && p.rf_stack === "v2")), "profile pushed with rf_stack");
 const sentProfile = pushed.flatMap(b => b.profiles).find(p => p.name === "beacon RF2");
 assert.deepEqual(sentProfile.script, good, "profile carries the built script");
-ok("Save config as + Save as profile: radio stack v2 stored and synced, Deploy switches to it");
+assert.match(promptDefaults.at(-1), /^heartbeat-4hz @ hs_advertiser v1\.3\.0-test · RF v2$/, "suggested profile name includes the firmware app");
+ok("Save config as + Save as profile: radio stack v2 stored and synced, Deploy switches to it; name suggests app + version");
+
+// ---------- files: load a config script; import a whole profile ----------
+const loadFile = async (name, obj) => {
+  const input = $("file-input");
+  Object.defineProperty(input, "files", { value: [new window.File([JSON.stringify(obj)], name, { type: "application/json" })], configurable: true });
+  fire(input, "change");
+  await sleep(150);
+};
+tab("profile");
+await waitFor(() => $("builder").querySelector(".call"), "builder visible");
+await loadFile("cfg.json", { app: "hs_advertiser", version: VER, calls: [{ method: "config.set", params: { led: { blink_hz: 7 } } }, { method: "device.reboot" }] });
+await waitFor(() => editorScript().calls.length === 2 && editorScript().calls[0].params.led.blink_hz === 7, "config file loaded into the editor");
+assert.match($("validation").textContent, /✓ valid · 2 calls · unsaved changes/);
+assert.equal($("builder").querySelectorAll(".call").length, 2, "form shows the loaded calls");
+const before2 = alerts.length;
+await loadFile("profile.json", { kind: "profile", name: "from-file", app: "hs_advertiser", version: VER, rf_stack: "v2",
+                                 config_name: "filecfg", script: { calls: [{ method: "config.reset" }] } });
+await waitFor(() => [...$("profile-select").options].some(o => o.textContent === "from-file"), "imported profile listed");
+assert.ok(alerts.slice(before2).some(a => /Imported profile "from-file"/.test(a)));
+await waitFor(() => pushed.some(b => b.profiles?.some(p => p.name === "from-file" && p.rf_stack === "v2")), "imported profile synced");
+await loadFile("bad.json", { kind: "profile", name: "bad", app: "hs_advertiser", version: VER, script: { calls: [{ method: "config.set", params: { colour: "red" } }] } });
+assert.ok(alerts.some(a => /isn't valid for hs_advertiser.*colour: unknown setting/s.test(a)), "invalid profile file refused");
+await loadFile("junk.json", { hello: 1 });
+assert.ok(alerts.some(a => /isn't a config .* or a profile file/.test(a)));
+ok("Files: config script loads into the editor; whole profile imported + synced; invalid and unknown files refused");
+
+// ---------- single-blink: an on/off setting has one switch, not an extra include tick ----------
+tab("profile");
+$("app").value = "single-blink"; fire($("app"), "change");
+await waitFor(() => [...$("builder").querySelectorAll(".fld-head label")].some(l => l.textContent === "on ms"), "single-blink form");
+const enabledFld = [...$("builder").querySelectorAll(".fld")].find(f => f.querySelector(".fld-head")?.textContent === "enabled");
+assert.equal(enabledFld.querySelectorAll('input[type=checkbox]').length, 1, "only the on/off switch itself");
+assert.equal(enabledFld.querySelector("label.fld-head input[type=checkbox]")?.nextElementSibling?.textContent, "enabled", "switch sits right next to its label");
+assert.ok(!enabledFld.classList.contains("off"));
+const sw = enabledFld.querySelector('input[type=checkbox]');
+sw.checked = false; fire(sw, "change");
+assert.equal(editorScript().calls[0].params.led.enabled, false, "switch off -> enabled: false is sent");
+const onMs = [...$("builder").querySelectorAll(".fld")].find(f => f.querySelector(".fld-head label")?.textContent === "on ms");
+assert.equal(onMs.querySelectorAll('.fld-head input[type=checkbox]').length, 1, "non-boolean optional settings keep their include tick");
+assert.deepEqual(validateScriptFor(editorScript(), sbMethods), [], "valid for single-blink");
+ok("single-blink form: 'enabled' is one switch (no extra checkbox); other optional settings keep the include tick");
 
 // ---------- Fleet ----------
 tab("fleet");
@@ -178,9 +282,10 @@ await waitFor(() => window.document.querySelectorAll("#fleet-groups .dev").lengt
 const group = window.document.querySelector("#fleet-groups .group");
 assert.match(group.querySelector(".group-head").textContent, /fast-blink.*RF v1.*2 devices/s);
 const rows = [...window.document.querySelectorAll("#fleet-groups .dev")];
-assert.match(rows[0].textContent, /hs-01.*58e6c513033c.*-57 dBm.*capture 99\.77%.*missed 40/s, "hs-01 metrics (derived BLE address)");
+assert.match(rows[0].textContent, /rack-1 hs-01.*58e6c513033c.*-57 dBm.*capture 99\.77%.*missed 40/s, "fleet name shown, hs-01 beside it; metrics");
+assert.doesNotMatch(rows[0].textContent, /v1\.3\.0-test/, "collapsed row doesn't repeat the firmware version");
 assert.match(rows[1].textContent, /hs-02.*58e6c5195088.*-51 dBm.*capture 100%/s, "hs-02 metrics (recorded BLE address)");
-assert.match($("unprovisioned").textContent, /hs-09.*11:22:33:44:55:66/s, "heard-but-unprovisioned board listed");
+assert.match($("unprovisioned").textContent, /hs-09 · 112233445564.*DeployProfileRename/s, "heard-but-unprovisioned board listed, with its device ID and actions");
 ok("Fleet: grouped by profile, sorted by board, metrics joined, unprovisioned section");
 
 click(rows[1].querySelector(".dev-row"));
@@ -188,18 +293,75 @@ await waitFor(() => window.document.querySelector("#fleet-groups .dev.open"), "e
 const open = window.document.querySelector("#fleet-groups .dev.open");
 assert.match(open.textContent, /History \(1\)/);
 assert.match(open.textContent, /flashed v1\.2\.0 → v1\.3\.0-test/);
+assert.match(open.textContent, /firmware.*hs_advertiser v1\.3\.0-test/s, "firmware version shown when expanded");
+assert.deepEqual([...open.querySelectorAll(".row button")].map(b => b.textContent), ["Deploy", "Profile", "Rename", "Collapse"]);
 click([...open.querySelectorAll("button")].find(b => b.textContent === "Collapse"));
 await waitFor(() => !window.document.querySelector("#fleet-groups .dev.open"), "collapse");
 click(window.document.querySelectorAll("#fleet-groups .dev")[1].querySelector(".dev-row"));
 await waitFor(() => window.document.querySelector("#fleet-groups .dev.open"), "expand again");
 ok("Fleet: device row expands to details + history and collapses again");
 
-click([...window.document.querySelector("#fleet-groups .dev.open").querySelectorAll("button")].find(b => b.textContent === "Deploy to this device"));
+const devBtn = text => [...window.document.querySelector("#fleet-groups .dev.open").querySelectorAll("button")].find(b => b.textContent === text);
+// rename hs-02: a name already used (ignoring capitals) is refused, a free one is taken
+promptAnswers = ["RACK-1"];
+click(devBtn("Rename"));
+await waitFor(() => alerts.some(a => /already the name of device 58e6c513033c/.test(a)), "duplicate name refused");
+promptAnswers = ["server.room_2"];
+click(devBtn("Rename"));
+await waitFor(() => /server\.room_2 hs-02/.test(window.document.querySelectorAll("#fleet-groups .dev")[1].textContent), "renamed");
+promptAnswers = ["bad name!"];
+click(devBtn("Rename"));
+assert.ok(alerts.some(a => /1-20 characters/.test(a)), "invalid characters refused before asking the server");
+ok("Fleet names: shown with hs-NN beside them; rename; duplicates (any capitals) and bad characters refused");
+
+click(devBtn("Deploy"));
 await waitFor(() => !window.document.querySelector('[data-panel="deploy"]').classList.contains("hidden"), "jump to deploy");
-assert.match($("target-line").textContent, /Target: hs-02 · 58e6c5195088 \(only this node will be offered\)/);
+assert.match($("target-line").textContent, /Target: server\.room_2 \(hs-02\) · 58e6c5195088 · the chooser will offer only hs-02/);
 click($("target-line").querySelector("button"));
 assert.match($("target-line").textContent, /any hs-\* node/);
-ok("Fleet -> Deploy: targets that node (chooser filtered by name), target can be cleared");
+ok("Fleet 'Deploy': targets that node by its fleet name (chooser filtered to its Bluetooth name); target can be cleared");
+
+tab("fleet");
+await waitFor(() => window.document.querySelector("#fleet-groups .dev.open"), "still expanded");
+click(devBtn("Profile"));
+await waitFor(() => !window.document.querySelector('[data-panel="profile"]').classList.contains("hidden"), "jump to profile");
+assert.equal($("save-profile").textContent, "Deploy to target: server.room_2");
+promptAnswers = ["room-2-cfg", "for-room-2"]; // unsaved edits: config name first, then the profile name
+click($("save-profile"));
+await waitFor(() => !window.document.querySelector('[data-panel="deploy"]').classList.contains("hidden")
+  && $("profile-select").options[$("profile-select").selectedIndex]?.textContent === "for-room-2", "profile saved, on Deploy");
+assert.match($("target-line").textContent, /Target: server\.room_2/, "target kept for the deploy");
+click($("target-line").querySelector("button"));
+assert.equal($("save-profile").textContent, "Save as profile…", "button back to normal without a target");
+ok("Fleet 'Profile': Profile tab's button reads 'Deploy to target: <name>', saves a profile, lands on Deploy with the target");
+
+// ---------- Alerts panel ----------
+click($("bell"));
+await waitFor(() => !$("alerts-card").classList.contains("hidden") && $("threshold").value === "35", "alerts panel with threshold");
+assert.match($("threshold-info").textContent, /Currently 35 °C, back to normal below 34 °C · default/);
+assert.equal($("alerts-on").checked, false, "not subscribed in this browser");
+$("threshold").value = "33"; fire($("threshold"), "input");
+assert.equal($("threshold-range").value, "33", "slider follows the number box");
+$("clear-below").value = "32"; fire($("clear-below"), "input");
+click($("threshold-save"));
+await waitFor(() => savedThresholds.includes(33) && /Currently 33 °C, back to normal below 32 °C · set/.test($("threshold-info").textContent), "threshold saved");
+$("threshold").value = "30"; $("clear-below").value = "31";
+click($("threshold-save"));
+assert.ok(alerts.some(a => /must be lower/.test(a)), "clear-below must be under the threshold");
+ok("Alerts: bell opens the panel; threshold loads, saves to the server, validated");
+
+// ---------- Gateway tab ----------
+const { IdbStore } = await import(new URL("static/store.js", here).href);
+const s2 = await IdbStore.open();
+await s2.put("gateway", { id: "58:E6:C5:19:50:8A:1:5", address: "58:E6:C5:19:50:8A", board_id: 2, name: "hs-02", counter: 1, temp_c: 30,
+                          uptime_s: 5, received_at: new Date().toISOString() });
+tab("gateway");
+await waitFor(() => /1 reading waiting to upload/.test($("gw-pending").textContent), "pending gateway reading shown");
+assert.match($("st-pending").textContent, /1 to sync/, "counted in the header too");
+click($("gw-upload"));
+await waitFor(() => gatewayUploads.length === 1 && /Nothing waiting/.test($("gw-pending").textContent), "uploaded");
+assert.match($("gw-log").textContent, /uploaded 1 gateway reading/);
+ok("Gateway: pending readings shown, uploaded on sync, cleared");
 
 console.log(`\n${passed} UI checks passed`);
 process.exit(0);

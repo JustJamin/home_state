@@ -11,7 +11,9 @@ import { validateScript, scriptableMethods } from "./schema.js";
 import { Node } from "./ota.js";
 import { deploy } from "./deploy.js";
 import * as B from "./builder.js";
-import { buildFleetView, seenState } from "./fleetview.js";
+import { buildFleetView, seenState, NAME_RE } from "./fleetview.js";
+import { mount as mountChart } from "./livechart.js";
+import * as GW from "./gateway.js";
 
 const $ = id => document.getElementById(id);
 const CLIENT = `provision/${navigator.userAgent.match(/Chrome\/[\d.]+/)?.[0] ?? "browser"}`;
@@ -45,13 +47,23 @@ const compact = p => (p === undefined ? "" : JSON.stringify(p));
 
 // ---------------- startup ----------------
 
-const store = await IdbStore.open();
+window.__step = "opening local storage";
+const store = await IdbStore.open("home_state", {
+  onBlocked: () => {
+    window.__step = "waiting for another copy of the app to close";
+    window.__showFatal?.("Updating the app's local storage: close any other copy of this app (another Chrome " +
+                         "tab or the installed app) and this one will carry on.");
+  },
+});
+window.__step = "starting";
+document.getElementById("fatal")?.style.setProperty("display", "none");
 const sync = new Sync(store);
 const catalogue = new Catalogue(store);
 const ui = {
   apps: [], methods: null, defaultScript: null, configs: [], script: { calls: [] }, dirty: false,
-  mode: "form", jsonError: null, target: null, profiles: [], metrics: (await store.getMeta("metrics")) ?? null,
-  loadedVersion: null, loadedConfig: null, // what the Build editor currently shows (kept across background refreshes)
+  mode: "form", jsonError: null, target: null, profiles: [], profileOpen: false, rssi: null, metrics: (await store.getMeta("metrics")) ?? null,
+  loadedVersion: null, loadedConfig: null,
+  names: (await store.getMeta("names")) ?? {}, // device_id -> fleet name (cached for offline display) // what the Build editor currently shows (kept across background refreshes)
   expanded: new Set(),
 };
 
@@ -62,33 +74,45 @@ if (!navigator.bluetooth) {
   const el = $("unsupported");
   el.textContent = window.isSecureContext
     ? "This browser has no Web Bluetooth: use Chrome on Android. You can still browse and build profiles."
-    : "Web Bluetooth needs HTTPS: open https://lenovo.tailc2dfa5.ts.net/provision";
+    : "Web Bluetooth needs HTTPS: open https://lenovo.tailc2dfa5.ts.net/admin";
   el.classList.add("show");
 }
 
 // ---------------- tabs + status ----------------
 
 function showTab(name) {
+  if (name === "gateway") renderGateway();
   for (const x of document.querySelectorAll("nav.tabs button")) x.classList.toggle("active", x.dataset.tab === name);
   for (const p of document.querySelectorAll("[data-panel]")) p.classList.toggle("hidden", p.dataset.panel !== name);
-  if (name === "fleet") { renderFleet(); refreshMetrics(); }
+  if (name === "fleet") { renderFleet(); refreshMetrics(); showRssi(); }
   window.scrollTo({ top: 0 });
 }
 for (const b of document.querySelectorAll("nav.tabs button")) b.addEventListener("click", () => showTab(b.dataset.tab));
 const fleetVisible = () => !document.querySelector('[data-panel="fleet"]').classList.contains("hidden");
 
-sync.onChange(s => {
+let gwPending = 0; // gateway readings waiting to upload (counted in "to sync")
+function renderStatus(s = sync.state) {
   const on = $("st-online");
   on.textContent = s.online === null ? "…" : s.online ? "● online" : "○ offline";
   on.className = `pill ${s.online ? "on" : s.online === false ? "off" : ""}`;
-  $("st-pending").textContent = `${s.pending} to sync`;
-  $("st-pending").classList.toggle("hidden", !s.pending);
+  const n = s.pending + gwPending;
+  $("st-pending").textContent = `${n} to sync`;
+  $("st-pending").classList.toggle("hidden", !n);
   $("st-last").textContent = s.lastSync ? `synced ${ago(s.lastSync)}` : "";
-});
+}
+sync.onChange(renderStatus);
 
 async function syncNow() {
   const r = await sync.run();
   if (r) {
+    try {
+      const up = await GW.upload(store);
+      if (up.uploaded) gwLog(`uploaded ${up.uploaded} gateway reading(s): ${up.inserted} new, ${up.duplicates} the server already had`);
+    } catch (e) { gwLog(`upload failed: ${e.message}`); }
+    await renderGateway();
+    await loadNames();
+    if (fleetVisible()) renderFleet();
+    loadAlerts();
     if (r.rejected.length) alert(`The server refused ${r.rejected.length} record(s):\n` + r.rejected.map(x => x.errors.join("; ")).join("\n"));
     await refreshAll();
     catalogue.ensureOffline(ui.apps).then(renderProfiles);
@@ -131,7 +155,8 @@ async function renderVersion() {
   const v = ui.apps.find(a => a.app === app)?.versions.find(x => x.version === version);
   $("config-card").classList.toggle("hidden", !v);
   if (!v) { $("version-info").textContent = "No configurable versions."; $("rf-wrap").classList.add("hidden"); return; }
-  $("version-info").textContent = `${kb(v.size)} · built ${v.built.replace("T", " ")} · ESP-IDF ${v.idf}`;
+  $("version-info").textContent = "";
+  $("offline-size").textContent = kb(v.size);
   const keep = (await store.getMeta("keepOffline")) ?? [];
   $("keep-offline").checked = keep.includes(`${app}\n${version}`);
   const key = `${app}\n${version}`;
@@ -154,12 +179,38 @@ async function renderVersion() {
   $("rf-stack").replaceChildren(...(rf?.versions ?? []).map(x => h("option", { value: x }, x)));
   if (rf) $("rf-stack").value = rf.default ?? rf.versions[0];
 
-  $("methods-ref").replaceChildren(...scriptableMethods(ui.methods).map(m => h("li", {},
-    h("code", {}, m.name), m.per_device ? " (per-device: not in shared configs)" : "", ` – ${m.description ?? ""}`)));
+  renderMethodsRef();
   $("add-method").replaceChildren(...B.callableMethods(ui.methods).map(m => h("option", { value: m.name }, m.name)));
   ui.loadedVersion = key;
   ui.loadedConfig = null;
   await renderConfigs();
+}
+
+/** "Methods in this version": what each call does and every setting it takes. */
+function renderMethodsRef() {
+  const unitOf = k => (k.endsWith("_ms") ? " ms" : k.endsWith("_hz") ? " Hz" : k === "seconds" || k.endsWith("_s") ? " s" : "");
+  const rows = (schema, prefix = "") => Object.entries(schema.properties ?? {}).flatMap(([k, s]) => {
+    if (s.type === "object") {
+      return [h("li", {}, h("code", {}, prefix + k), " – ", s.description ?? "group of settings:", h("ul", {}, rows(s, `${prefix}${k}.`)))];
+    }
+    const u = unitOf(k);
+    const what = s.enum ? `one of ${s.enum.join(", ")}` :
+      s.type === "boolean" ? "true or false" :
+      "minimum" in s ? `${s.type === "integer" ? "whole number" : "number"} ${s.minimum}–${s.maximum}${u}` : s.type;
+    return [h("li", {}, h("code", {}, prefix + k), ` (${what}${"default" in s ? `, default ${s.default}${u}` : ""})`,
+      (schema.required ?? []).includes(k) ? h("b", {}, " required") : null,
+      s.description ? h("div", { class: "muted" }, s.description) : null)];
+  });
+  $("methods-ref").replaceChildren(
+    h("li", { class: "muted", style: "list-style:none;margin-left:-18px" },
+      `${ui.methods.app} ${$("version").value}: ${ui.methods.description?.replace(/^[^:]+: /, "") ?? ""} ` +
+      "A config is a list of these calls, run in order on the node."),
+    ...scriptableMethods(ui.methods).map(m => h("li", { style: "margin-top:8px" },
+      h("code", {}, h("b", {}, m.name)),
+      m.per_device ? h("span", { class: "badge warn" }, "per-device: not allowed in shared configs") : null,
+      m.reboots ? h("span", { class: "badge" }, "reboots the node") : null,
+      h("div", {}, m.description ?? ""),
+      m.params?.properties ? h("ul", {}, rows(m.params)) : h("div", { class: "muted" }, "Takes no parameters."))));
 }
 
 async function renderConfigs(selectId) {
@@ -170,7 +221,7 @@ async function renderConfigs(selectId) {
     .sort((a, b) => b.created_at.localeCompare(a.created_at));
   const sel = $("config");
   const prev = selectId ?? sel.value;
-  sel.replaceChildren(h("option", { value: DEFAULT }, "default (ships with this version)"),
+  sel.replaceChildren(h("option", { value: DEFAULT }, "Default"),
     ...ui.configs.map(c => h("option", { value: c.id }, `${c.name}${c._rejected ? " ⚠ refused by server" : ""}`)));
   sel.value = [DEFAULT, ...ui.configs.map(c => c.id)].includes(prev) ? prev : DEFAULT;
   if (sel.value !== ui.loadedConfig) loadConfig(); // else keep the editor, including unsaved edits
@@ -261,22 +312,23 @@ function renderBuilder() {
     let body;
     if (!B.representable(call, ui.methods)) body = h("div", { class: "muted fld" }, "This call has something the form can't show; edit it in JSON.");
     else if (m?.params) body = renderFields(B.fieldsFor(m.params, call.params ?? {}), i);
-    else body = h("div", { class: "muted fld" }, m?.description ?? "No settings.");
-    return h("div", { class: "call" }, head, m?.description && m.params ? h("div", { class: "muted" }, m.description) : null, body);
+    else body = h("div", { class: "muted fld" }, "No settings.");
+    return h("div", { class: "call" }, head, body); // what each method does is in the methods guide below
   }), calls.length ? "" : h("div", { class: "muted", style: "margin-top:10px" }, "No calls yet: add one below."));
 }
 
 function renderFields(fields, i, parentIncluded = true) {
   return fields.map(f => {
-    const on = f.required || f.included;
-    const toggle = f.required ? null : h("input", {
+    const on = f.required || f.included || f.kind === "bool";
+    // a boolean is always sent (its own switch is the setting); other optional settings get an include tick
+    const toggle = f.required || f.kind === "bool" ? null : h("input", {
       type: "checkbox", checked: f.included, title: "include this setting",
       onchange: e => edit(e.target.checked ? B.setParam(ui.script, i, f.path, f.value) : B.unsetParam(ui.script, i, f.path), true),
     });
     const set = (v) => edit(B.setParam(ui.script, i, f.path, v));
     if (f.kind === "object") {
       return h("div", { class: `fld${on && parentIncluded ? "" : " off"}` },
-        h("div", { class: "fld-head" }, toggle, h("label", {}, f.label), h("span", { class: "muted" }, f.description)),
+        h("div", { class: "fld-head" }, toggle, h("label", {}, f.label)),
         h("fieldset", {}, renderFields(f.children, i, on && parentIncluded)));
     }
     let ctl;
@@ -292,7 +344,8 @@ function renderFields(fields, i, parentIncluded = true) {
     } else if (f.kind === "enum") {
       ctl = h("select", { onchange: e => set(e.target.value) }, f.schema.enum.map(x => h("option", { value: x, selected: x === f.value }, x)));
     } else if (f.kind === "bool") {
-      ctl = h("input", { type: "checkbox", checked: f.value, onchange: e => set(e.target.checked) });
+      const sw = h("input", { type: "checkbox", checked: f.value, onchange: e => set(e.target.checked) });
+      return h("div", { class: "fld" }, h("label", { class: "fld-head" }, sw, h("span", {}, f.label)));
     } else {
       ctl = h("input", { type: "text", value: f.value ?? "", oninput: e => set(e.target.value) });
     }
@@ -339,6 +392,11 @@ async function saveConfig() {
 }
 $("save-config").addEventListener("click", saveConfig);
 
+/** The Profile tab's main button: "Save as profile…", or "Deploy to target: X" when a Fleet device is targeted. */
+function renderProfileButton() {
+  $("save-profile").textContent = ui.target ? `Deploy to target: ${ui.target.label}` : "Save as profile…";
+}
+
 $("save-profile").addEventListener("click", async () => {
   let cfg = selectedConfig();
   if (ui.dirty) {
@@ -348,7 +406,8 @@ $("save-profile").addEventListener("click", async () => {
   }
   const version = $("version").value;
   const rf = ui.methods.rf_stacks ? $("rf-stack").value : null;
-  const name = prompt("Name for this profile:", `${cfg.name} @ ${version}${rf ? ` · RF ${rf}` : ""}`)?.trim();
+  const name = prompt(ui.target ? `Save as a profile to deploy to ${ui.target.label}. Profile name:` : "Name for this profile:",
+                      `${cfg.name} @ ${$("app").value} ${version}${rf ? ` · RF ${rf}` : ""}`)?.trim();
   if (!name) return;
   const p = await addRecord(store, "profiles", {
     id: crypto.randomUUID(), name, app: $("app").value, version, config_id: cfg.id, config_name: cfg.name,
@@ -360,6 +419,86 @@ $("save-profile").addEventListener("click", async () => {
   await renderProfiles();
   syncNow();
   showTab("deploy");
+});
+
+// ---- files: load a config script or import a whole profile; export a profile ----
+
+function download(name, obj) {
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(new Blob([JSON.stringify(obj, null, 2)], { type: "application/json" }));
+  a.download = name;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+}
+
+function exportProfile(p) {
+  download(`${p.name.replace(/[^\w.-]+/g, "_")}.profile.json`, {
+    kind: "profile", name: p.name, app: p.app, version: p.version, rf_stack: p.rf_stack ?? null,
+    config_name: p.config_name, script: { calls: p.script.calls },
+  });
+}
+
+/** A file is a profile if it says so or carries a script plus app+version; a config if it has calls. */
+function classifyFile(obj) {
+  if (obj && typeof obj === "object" && !Array.isArray(obj)) {
+    if (obj.kind === "profile" || (obj.script && obj.app && obj.version)) return "profile";
+    if (Array.isArray(obj.calls)) return "config";
+  }
+  if (Array.isArray(obj)) return "config"; // a bare list of calls
+  return null;
+}
+
+async function importProfile(obj) {
+  const v = ui.apps.find(a => a.app === obj.app)?.versions.find(x => x.version === obj.version);
+  if (!v?.configurable) throw new Error(`${obj.app} ${obj.version} isn't in the catalogue (or has no configs)`);
+  const methods = await catalogue.json(obj.app, obj.version, "methods.json");
+  const script = { calls: obj.script?.calls ?? obj.calls ?? [] };
+  const errors = validateScript(script, methods, true);
+  const rfs = methods.rf_stacks;
+  const rf = rfs ? (obj.rf_stack ?? rfs.default) : null;
+  if (rfs && !rfs.versions.includes(rf)) errors.push(`radio stack must be one of ${rfs.versions.join(", ")}`);
+  if (errors.length) throw new Error(`the profile's config isn't valid for ${obj.app} ${obj.version}:\n- ${errors.join("\n- ")}`);
+  const taken = new Set(ui.profiles.map(p => p.name));
+  let name = String(obj.name ?? "imported profile");
+  while (taken.has(name)) name += " (imported)";
+  const p = await addRecord(store, "profiles", {
+    id: crypto.randomUUID(), name, app: obj.app, version: obj.version, config_id: null,
+    config_name: obj.config_name ?? "imported", script, rf_stack: rf, created_at: new Date().toISOString(), client: CLIENT,
+  });
+  catalogue.keepOffline(obj.app, obj.version).catch(() => {});
+  await store.setMeta("deployProfile", p.id);
+  await renderProfiles();
+  syncNow();
+  return p;
+}
+
+$("load-file").addEventListener("click", () => $("file-input").click());
+$("file-input").addEventListener("change", async e => {
+  const f = e.target.files[0];
+  e.target.value = "";
+  if (!f) return;
+  let obj;
+  try { obj = JSON.parse(await f.text()); } catch (err) { alert(`${f.name} isn't valid JSON: ${err.message}`); return; }
+  const kind = classifyFile(obj);
+  try {
+    if (kind === "profile") {
+      const p = await importProfile(obj);
+      alert(`Imported profile "${p.name}" (${p.app} ${p.version}).`);
+      showTab("deploy");
+    } else if (kind === "config") {
+      const app = $("app").value, version = $("version").value;
+      const notes = [];
+      if (obj.app && obj.app !== app) notes.push(`it was made for ${obj.app}, but ${app} is selected`);
+      if (obj.version && obj.version !== version) notes.push(`it was made for ${obj.version}, but ${version} is selected`);
+      if (notes.length && !confirm(`Load ${f.name} anyway? ${notes.join("; ")}. It will be checked against the selected version.`)) return;
+      const calls = Array.isArray(obj) ? obj : obj.calls;
+      edit({ calls: structuredClone(calls) }, true);
+    } else {
+      alert(`${f.name} isn't a config ({"calls": [...]}) or a profile file.`);
+    }
+  } catch (err) {
+    alert(`Couldn't load ${f.name}: ${err.message}`);
+  }
 });
 
 $("archive-config").addEventListener("click", async () => {
@@ -399,18 +538,26 @@ async function renderProfileDetail() {
   if (!p) { $("profile-detail").replaceChildren(); renderTarget(); return; }
   const offline = await catalogue.isOffline(p.app, p.version);
   if (gen !== profilesGen) return; // a newer render (or another selection) owns the card now
-  $("profile-detail").replaceChildren(h("div", { class: "detail" },
-    h("div", {}, h("b", {}, p.name),
+  const summary = h("div", { class: "row", style: "justify-content:space-between" },
+    h("span", { class: "muted" }, `${p.app} ${p.version}`,
       offline ? h("span", { class: "badge ok" }, "offline ✓") : h("span", { class: "badge warn" }, "needs network"),
       p._rejected ? h("span", { class: "badge bad" }, "refused by server") : null),
+    h("button", { class: "secondary small", "aria-expanded": String(ui.profileOpen),
+                  onclick: () => { ui.profileOpen = !ui.profileOpen; renderProfileDetail(); } },
+      ui.profileOpen ? "Hide profile" : "View profile"));
+  if (!ui.profileOpen) { $("profile-detail").replaceChildren(summary); renderTarget(); return; }
+  $("profile-detail").replaceChildren(summary, h("div", { class: "detail" },
+    h("div", {}, h("b", {}, p.name)),
     h("dl", { class: "kv", style: "margin-top:8px" },
       h("dt", {}, "firmware"), h("dd", {}, `${p.app} ${p.version}`),
-      h("dt", {}, "radio stack"), h("dd", {}, p.rf_stack ?? "–"),
+      h("dt", {}, "RF module firmware"), h("dd", {}, p.rf_stack ?? "–"),
       h("dt", {}, "config"), h("dd", {}, p.config_name),
       h("dt", {}, "created"), h("dd", {}, new Date(p.created_at).toLocaleString())),
     h("div", { class: "muted", style: "margin-top:8px" }, "Calls, run in order:"),
     h("ol", {}, p.script.calls.map(c => h("li", {}, h("code", {}, c.method), " ", h("span", { class: "muted mono" }, compact(c.params))))),
-    h("div", { class: "row" }, h("button", { class: "danger small", onclick: () => archiveProfile(p) }, "Archive profile"))));
+    h("div", { class: "row" },
+      h("button", { class: "secondary small", onclick: () => exportProfile(p) }, "Export JSON"),
+      h("button", { class: "danger small", onclick: () => archiveProfile(p) }, "Archive profile"))));
   renderTarget();
 }
 $("profile-select").addEventListener("change", async () => {
@@ -421,10 +568,12 @@ $("profile-select").addEventListener("change", async () => {
 function renderTarget() {
   const t = ui.target;
   $("target-line").replaceChildren(t
-    ? h("span", {}, "Target: ", h("b", {}, t.name), t.device_id ? h("span", { class: "muted mono" }, ` · ${t.device_id}`) : null,
-        h("span", { class: "muted" }, " (only this node will be offered)"))
+    ? h("span", {}, "Target: ", h("b", {}, t.label), t.label !== t.name ? h("span", { class: "muted" }, ` (${t.name})`) : null,
+        t.device_id ? h("span", { class: "muted mono" }, ` · ${t.device_id}`) : null,
+        h("span", { class: "muted" }, ` · the chooser will offer only ${t.name}`))
     : h("span", { class: "muted" }, "Target: any hs-* node; you'll pick it in the Bluetooth chooser."),
     t ? h("button", { class: "secondary icon", title: "clear target", onclick: () => { ui.target = null; renderTarget(); } }, "✕") : null);
+  renderProfileButton();
 }
 
 async function archiveProfile(p) {
@@ -527,6 +676,13 @@ $("inspect").addEventListener("click", async () => {
 
 // ============================== Fleet ==============================
 
+/** Signal strength chart (moved here from the dashboard): mounted the first time Fleet shows. */
+function showRssi() {
+  if (ui.rssi) return;
+  ui.rssi = mountChart({ root: $("rssi"), metric: "rssi", title: "Signal strength", unit: "dBm", key: "admin.rssi", height: 240 });
+  ui.rssi.reload().then(() => ui.rssi.connect());
+}
+
 async function refreshMetrics() {
   try {
     const r = await fetch("api/fleet/metrics?hours=24");
@@ -538,10 +694,42 @@ async function refreshMetrics() {
 }
 setInterval(() => fleetVisible() && refreshMetrics(), 30000);
 
-function targetDevice(name, device_id = null, ble_address = null) {
-  ui.target = { name, device_id, ble_address };
-  showTab("deploy");
+/** Target a fleet device: name = its Bluetooth name (hs-NN, what the chooser shows), label = its fleet name. */
+function targetDevice({ name, label, device_id = null, ble_address = null }, tab = "deploy") {
+  ui.target = { name, label: label ?? name, device_id, ble_address };
+  showTab(tab);
   renderTarget();
+}
+
+const displayName = (deviceId, boardId) => ui.names[deviceId] ?? (boardId != null ? boardName(boardId) : "hs-??");
+
+async function loadNames() {
+  try {
+    const r = await fetch("api/devices/names");
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    ui.names = Object.fromEntries((await r.json()).map(x => [x.device_id, x.name]));
+    await store.setMeta("names", ui.names);
+  } catch { /* offline: keep the cached names */ }
+}
+
+async function renameDevice(deviceId, current) {
+  if (sync.state.online === false) { alert("Renaming needs a connection to the server (names must be unique in the fleet)."); return; }
+  const name = prompt("Name for this device (1-20 letters, numbers, '.', '-' or '_'; leave empty to clear):", current ?? "");
+  if (name === null) return;
+  const trimmed = name.trim();
+  if (trimmed && !NAME_RE.test(trimmed)) { alert("Names are 1-20 characters: letters, numbers, '.', '-' and '_'."); return; }
+  try {
+    const r = await fetch(`api/devices/${deviceId}/name`, {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: trimmed || null, client: CLIENT }),
+    });
+    const body = await r.json();
+    if (!r.ok) throw new Error(typeof body.detail === "string" ? body.detail : `HTTP ${r.status}`);
+    if (body.name) ui.names[deviceId] = body.name; else delete ui.names[deviceId];
+    await store.setMeta("names", ui.names);
+  } catch (e) {
+    alert(`Couldn't rename: ${e.message}`);
+  }
+  renderFleet();
 }
 
 function metricsLine(m, extra = []) {
@@ -554,7 +742,7 @@ let fleetGen = 0;
 
 async function renderFleet() {
   const gen = ++fleetGen;
-  const view = buildFleetView(await fleet(store), ui.metrics?.rows ?? [], await store.all("profiles"));
+  const view = buildFleetView(await fleet(store), ui.metrics?.rows ?? [], await store.all("profiles"), ui.names);
   if (gen !== fleetGen) return;
   $("metrics-age").textContent = ui.metrics
     ? (sync.state.online === false ? `network metrics as of ${new Date(ui.metrics.at).toLocaleTimeString()}` : `metrics ${ago(ui.metrics.at)}`)
@@ -573,29 +761,40 @@ async function renderFleet() {
   $("unprovisioned").replaceChildren(...(view.unprovisioned.length ? [h("div", { class: "group" },
     h("div", { class: "group-head" }, h("h3", {}, "Seen by the scanner, not in the fleet"),
       h("span", { class: "muted" }, "no deployment recorded yet")),
-    view.unprovisioned.map(m => h("div", { class: "dev" },
-      h("div", { class: "dev-row", style: "cursor:default" },
-        h("span", { class: `dot ${seenState(m.last_seen)}` }),
-        h("span", {}, h("b", {}, boardName(m.board_id)), h("span", { class: "muted mono" }, ` · ${m.address}`)),
-        h("button", { class: "secondary small", onclick: () => targetDevice(boardName(m.board_id), null, m.address) }, "Deploy to it"),
-        h("span", { class: "metrics" }, metricsLine(m))))))] : []));
+    view.unprovisioned.map(m => {
+      const target = { name: boardName(m.board_id), label: m.name ?? boardName(m.board_id), device_id: m.device_id, ble_address: m.address };
+      return h("div", { class: "dev" },
+        h("div", { class: "dev-row", style: "cursor:default" },
+          h("span", { class: `dot ${seenState(m.last_seen)}` }),
+          h("span", {}, h("b", {}, target.label), m.name ? h("span", { class: "muted" }, ` ${target.name}`) : null,
+            h("span", { class: "muted mono" }, ` · ${m.device_id}`)),
+          h("span", {}),
+          h("span", { class: "metrics" }, metricsLine(m))),
+        h("div", { class: "row", style: "margin:0 0 10px 22px" },
+          h("button", { class: "small", onclick: () => targetDevice(target) }, "Deploy"),
+          h("button", { class: "secondary small", onclick: () => targetDevice(target, "profile") }, "Profile"),
+          h("button", { class: "secondary small", onclick: () => renameDevice(m.device_id, m.name) }, "Rename")));
+    }))] : []));
 }
 
 function deviceRow(d) {
   const open = ui.expanded.has(d.device_id);
-  const name = d.board_id != null ? boardName(d.board_id) : "hs-??";
+  const name = d.board_id != null ? boardName(d.board_id) : "hs-??"; // Bluetooth name
+  const label = d.name ?? name;                                          // fleet name, if it has one
   const m = d.metrics;
   const toggle = () => { open ? ui.expanded.delete(d.device_id) : ui.expanded.add(d.device_id); renderFleet(); };
   const row = h("div", { class: "dev-row", onclick: toggle, title: open ? "collapse" : "expand" },
     h("span", { class: `dot ${seenState(m?.last_seen)}` }),
-    h("span", {}, h("b", {}, name), h("span", { class: "muted mono" }, ` · ${d.device_id}`)),
+    h("span", {}, h("b", {}, label), d.name ? h("span", { class: "muted" }, ` ${name}`) : null,
+      h("span", { class: "muted mono" }, ` · ${d.device_id}`)),
     h("span", {}, d.latest.ok ? h("span", { class: "badge ok" }, "ok") : h("span", { class: "badge bad" }, "last deploy failed"),
       h("span", { class: "chev" }, " ›")),
-    h("span", { class: "metrics" }, metricsLine(m, [` · ${d.current.version}`])));
+    h("span", { class: "metrics" }, metricsLine(m))); // firmware version is in the group header (and below when open)
   if (!open) return h("div", { class: "dev" }, row);
   const kv = [
-    ["device ID", d.device_id], ["BLE address", d.ble_address], ["firmware", `${d.current.app} ${d.current.version}`],
-    ["profile", d.current.profile_name ?? "–"], ["radio stack", d.current.rf_stack ?? "–"],
+    ["name", d.name ?? "–"], ["Bluetooth name", name], ["device ID", d.device_id], ["BLE address", d.ble_address],
+    ["firmware", `${d.current.app} ${d.current.version}`],
+    ["profile", d.current.profile_name ?? "–"], ["RF module firmware", d.current.rf_stack ?? "–"],
     ["last deploy", `${new Date(d.latest.finished_at).toLocaleString()} ${d.latest.ok ? "✓" : `✗ ${d.latest.error ?? ""}`}`],
   ];
   if (m) kv.push(["last seen", `${new Date(m.last_seen).toLocaleString()} (${ago(m.last_seen)})`],
@@ -605,7 +804,9 @@ function deviceRow(d) {
   return h("div", { class: "dev open" }, row, h("div", { class: "dev-body" },
     h("dl", { class: "kv" }, kv.flatMap(([k, v]) => [h("dt", {}, k), h("dd", {}, v)])),
     h("div", { class: "row" },
-      h("button", { class: "small", onclick: () => targetDevice(name, d.device_id, d.ble_address) }, "Deploy to this device"),
+      h("button", { class: "small", onclick: () => targetDevice({ name, label, device_id: d.device_id, ble_address: d.ble_address }) }, "Deploy"),
+      h("button", { class: "secondary small", onclick: () => targetDevice({ name, label, device_id: d.device_id, ble_address: d.ble_address }, "profile") }, "Profile"),
+      h("button", { class: "secondary small", onclick: () => renameDevice(d.device_id, d.name) }, "Rename"),
       h("button", { class: "secondary small", onclick: toggle }, "Collapse")),
     h("div", { class: "muted", style: "margin-top:10px" }, `History (${d.history.length})`),
     d.history.map(x => h("div", { class: "hist" },
@@ -616,6 +817,159 @@ function deviceRow(d) {
       h("div", { class: "muted" }, `${new Date(x.finished_at).toLocaleString()} · board ${x.board_id ?? "–"} · ${x.results.length} call(s)${x.error ? ` · ${x.error}` : ""}`)))));
 }
 
+// ============================== Alerts ==============================
+// One fleet-wide threshold lives on the server (it sends the alerts); this phone subscribes
+// to Web Push so alerts arrive with the app closed. Tapping one opens the dashboard (sw.js).
+
+let alertsCfg = (await store.getMeta("alerts")) ?? null;
+
+const b64ToBytes = s => {
+  const b = atob(s.replace(/-/g, "+").replace(/_/g, "/") + "===".slice((s.length + 3) % 4));
+  return Uint8Array.from(b, c => c.charCodeAt(0));
+};
+
+async function pushSubscription() {
+  if (!("serviceWorker" in navigator) || !("PushManager" in window)) return null;
+  const reg = await navigator.serviceWorker.ready;
+  return reg.pushManager.getSubscription();
+}
+
+async function loadAlerts() {
+  try {
+    const r = await fetch("api/alerts/config");
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    alertsCfg = await r.json();
+    await store.setMeta("alerts", alertsCfg);
+  } catch { /* offline: keep the cached copy */ }
+  await renderAlerts();
+}
+
+async function renderAlerts() {
+  const c = alertsCfg;
+  const online = sync.state.online !== false;
+  const sub = await pushSubscription().catch(() => null);
+  $("alerts-on").checked = Boolean(sub) && typeof Notification !== "undefined" && Notification.permission === "granted";
+  $("bell").textContent = $("alerts-on").checked ? "🔔" : "🔕";
+  if (c) {
+    if (document.activeElement !== $("threshold")) $("threshold").value = c.threshold_c;
+    if (document.activeElement !== $("threshold-range")) $("threshold-range").value = c.threshold_c;
+    if (document.activeElement !== $("clear-below")) $("clear-below").value = c.clear_below_c;
+    $("threshold-info").textContent = `Currently ${c.threshold_c} °C, back to normal below ${c.clear_below_c} °C` +
+      (c.changed_at ? ` · set ${ago(c.changed_at)}` : " · default") + (online ? "" : " · offline: shown read-only");
+  }
+  const perm = typeof Notification === "undefined" ? "unsupported" : Notification.permission;
+  $("alerts-status").textContent =
+    perm === "denied" ? "Notifications are blocked for this site: allow them in Chrome's site settings." :
+    c && !c.push_enabled ? "The server has no push keys configured, so alerts can't be sent." :
+    $("alerts-on").checked ? "This phone will be notified." : "Off for this phone.";
+  for (const id of ["threshold", "threshold-range", "clear-below", "threshold-save"]) $(id).disabled = !online || !c;
+  $("alerts-test").disabled = !online || !$("alerts-on").checked;
+  $("alerts-on").disabled = !online || !c?.push_enabled;
+}
+
+$("bell").addEventListener("click", () => { $("alerts-card").classList.toggle("hidden"); loadAlerts(); });
+$("alerts-close").addEventListener("click", () => $("alerts-card").classList.add("hidden"));
+$("threshold-range").addEventListener("input", e => { $("threshold").value = e.target.value; });
+$("threshold").addEventListener("input", e => { $("threshold-range").value = e.target.value; });
+
+$("alerts-on").addEventListener("change", async e => {
+  try {
+    if (e.target.checked) {
+      if ((await Notification.requestPermission()) !== "granted") throw new Error("notification permission not given");
+      const reg = await navigator.serviceWorker.ready;
+      const sub = (await reg.pushManager.getSubscription()) ??
+        await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: b64ToBytes(alertsCfg.vapid_public_key) });
+      const r = await fetch("api/push/subscribe", { method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ...sub.toJSON(), client: CLIENT }) });
+      if (!r.ok) throw new Error((await r.json()).detail ?? `HTTP ${r.status}`);
+    } else {
+      const sub = await pushSubscription();
+      if (sub) {
+        await fetch("api/push/unsubscribe", { method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ endpoint: sub.endpoint }) }).catch(() => {});
+        await sub.unsubscribe();
+      }
+    }
+  } catch (err) {
+    alert(`Couldn't change alerts: ${err.message}`);
+  }
+  renderAlerts();
+});
+
+$("threshold-save").addEventListener("click", async () => {
+  const threshold_c = Number($("threshold").value), clear_below_c = Number($("clear-below").value);
+  if (!(clear_below_c < threshold_c)) { alert("'Back to normal below' must be lower than the alert threshold."); return; }
+  try {
+    const r = await fetch("api/alerts/config", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ threshold_c, clear_below_c, client: CLIENT }) });
+    const body = await r.json();
+    if (!r.ok) throw new Error(typeof body.detail === "string" ? body.detail : JSON.stringify(body.detail));
+    alertsCfg = body;
+    await store.setMeta("alerts", alertsCfg);
+  } catch (err) {
+    alert(`Couldn't save the threshold: ${err.message}`);
+  }
+  renderAlerts();
+});
+
+$("alerts-test").addEventListener("click", async () => {
+  try {
+    const r = await (await fetch("api/push/test", { method: "POST" })).json();
+    $("alerts-status").textContent = r.sent
+      ? `Test alert sent to ${r.sent} phone${r.sent === 1 ? "" : "s"}. Close the app to see it arrive.`
+      : "No phone received it: check that alerts are on.";
+  } catch (err) {
+    $("alerts-status").textContent = `Test failed: ${err.message}`;
+  }
+});
+
+// ============================== Gateway ==============================
+
+function gwLog(msg) {
+  $("gw-log").textContent += `${new Date().toLocaleTimeString()}  ${msg}\n`;
+  $("gw-log").scrollTop = $("gw-log").scrollHeight;
+}
+
+async function renderGateway() {
+  gwPending = await store.count("gateway");
+  renderStatus();
+  $("gw-pending").textContent = gwPending
+    ? `${gwPending} reading${gwPending === 1 ? "" : "s"} waiting to upload`
+    : "Nothing waiting to upload.";
+  $("gw-upload").disabled = !gwPending;
+  const devices = [];
+  for (const f of await fleet(store)) {
+    const c = await store.getMeta(`gw:${f.device_id}`);
+    if (c) devices.push([f.device_id, c]);
+  }
+  $("gw-devices").replaceChildren(...(devices.length ? [h("div", { class: "muted", style: "margin-top:10px" }, "Last collected:"),
+    ...devices.map(([id, c]) => h("div", { class: "hist" },
+      h("b", {}, c.name), h("span", { class: "muted mono" }, ` · ${id}`),
+      h("div", { class: "muted" }, `${ago(c.last_collect)} · ${c.collected} reading(s) that time`)))] : []));
+}
+
+$("gw-collect").addEventListener("click", async () => {
+  let node;
+  try { node = await Node.choose(); } catch (e) { if (e.name !== "NotFoundError") alert(e.message); return; }
+  const res = $("gw-result");
+  try {
+    const r = await GW.collect(node, store, { log: gwLog });
+    res.className = "result show ok";
+    res.textContent = `✓ ${r.collected} new reading${r.collected === 1 ? "" : "s"} from ${node.device.name}` +
+      (sync.state.online === false ? " · kept on the phone until you're back online" : "");
+  } catch (e) {
+    res.className = "result show bad";
+    res.textContent = `✗ ${e.message}`;
+    gwLog(`FAILED: ${e.message}`);
+  } finally {
+    node.disconnect();
+  }
+  await renderGateway();
+  syncNow();
+});
+
+$("gw-upload").addEventListener("click", syncNow);
+
 // ============================== go ==============================
 
 async function refreshAll() {
@@ -624,7 +978,13 @@ async function refreshAll() {
   if (fleetVisible()) await renderFleet();
 }
 
+window.__step = "rendering";
 setMode("form");
 await sync.refreshPending();
 await refreshAll();
+renderProfileButton();
+if (fleetVisible()) { refreshMetrics(); showRssi(); }
+await renderGateway();
+window.__appReady = true; // the start-up guard in provision.html stands down
+renderAlerts();
 syncNow();

@@ -6,7 +6,10 @@
  * DATA (write [no rsp])  [u32 offset LE][image bytes]
  * RPC  (write + notify)  JSON-RPC 2.0, framed [u8 flags][bytes]: 0x02 START, 0x01 FINAL (docs/jsonrpc.md)
  *
- * No authentication: any client in range can flash a valid hs_advertiser
+ * Images must belong to the node family (they carry FAMILY_MARKER, which this
+ * file itself puts in every family build), so a board can switch between apps
+ * (single-blink, double-blink, ...) but refuses unrelated firmware.
+ * No authentication: any client in range can flash a valid family
  * image (accepted risk for now). Rollback protects against images that
  * crash or never mark themselves valid, not against malicious ones.
  */
@@ -40,11 +43,20 @@ static const char *TAG = "ota";
 #define APP_DESC_OFFSET   32           /* image header (24) + first segment header (8) */
 #define HEADER_PEEK       (APP_DESC_OFFSET + 80)  /* enough to cover esp_app_desc_t.project_name */
 
+/* Every node-family app contains this string (it's here, so every build has it). An incoming
+ * image is accepted only if it contains it too. Bump the number for an incompatible family. */
+const char FAMILY_MARKER[] = "HOMESTATE-NODE-FAMILY:1";
+#define FAMILY_LEN (sizeof(FAMILY_MARKER) - 1)
+static uint8_t s_family_kmp[FAMILY_LEN]; /* KMP failure table */
+static size_t s_family_match;            /* chars of the marker matched so far */
+static bool s_family_seen;
+
 enum { CMD_BEGIN = 0x01, CMD_END = 0x02, CMD_APPLY = 0x03, CMD_ABORT = 0x04, CMD_SYNC = 0x05 };
 enum { RSP_BEGIN = 0x81, RSP_END = 0x82, RSP_APPLY = 0x83, RSP_ABORT = 0x84, RSP_SYNC = 0x85, RSP_NAK = 0x91 };
 enum {
     ST_OK = 0, ST_BAD_STATE = 1, ST_TOO_BIG = 2, ST_FLASH = 3, ST_BAD_OFFSET = 4,
-    ST_HASH = 5, ST_IMAGE_INVALID = 6, ST_WRONG_PROJECT = 7, ST_BAD_CMD = 8,
+    ST_HASH = 5, ST_IMAGE_INVALID = 6, ST_WRONG_PROJECT = 7 /* unused since v1.3.1 */, ST_BAD_CMD = 8,
+    ST_WRONG_FAMILY = 9,
 };
 
 /* 2727b0xx-1ada-46ff-8cde-9e8f32a32c1a, little-endian for NimBLE */
@@ -124,6 +136,34 @@ static uint32_t get_u32_le(const uint8_t *p)
     return p[0] | (p[1] << 8) | (p[2] << 16) | ((uint32_t)p[3] << 24);
 }
 
+/* Streaming search for FAMILY_MARKER across chunk boundaries (KMP). */
+static void family_init(void)
+{
+    size_t k = 0;
+    s_family_kmp[0] = 0;
+    for (size_t i = 1; i < FAMILY_LEN; i++) {
+        while (k && FAMILY_MARKER[i] != FAMILY_MARKER[k]) {
+            k = s_family_kmp[k - 1];
+        }
+        if (FAMILY_MARKER[i] == FAMILY_MARKER[k]) {
+            k++;
+        }
+        s_family_kmp[i] = k;
+    }
+}
+
+static void family_scan(const uint8_t *p, size_t n)
+{
+    for (size_t i = 0; i < n && !s_family_seen; i++) {
+        while (s_family_match && p[i] != (uint8_t)FAMILY_MARKER[s_family_match]) {
+            s_family_match = s_family_kmp[s_family_match - 1];
+        }
+        if (p[i] == (uint8_t)FAMILY_MARKER[s_family_match] && ++s_family_match == FAMILY_LEN) {
+            s_family_seen = true;
+        }
+    }
+}
+
 static void reset_transfer(const char *why)
 {
     if (s_xfer != XFER_IDLE) {
@@ -141,6 +181,8 @@ static void reset_transfer(const char *why)
     s_xfer = XFER_IDLE;
     s_received = s_size = 0;
     s_gap_logged = false;
+    s_family_match = 0;
+    s_family_seen = false;
 }
 
 static void touch_idle_timer(void)
@@ -212,6 +254,12 @@ static void cmd_end(void)
     if (ps != PSA_SUCCESS || sha_len != 32 || memcmp(sha, s_expected_sha, 32) != 0) {
         reset_transfer("sha256 mismatch");
         reply(RSP_END, ST_HASH, NULL, 0);
+        return;
+    }
+    if (!s_family_seen) {
+        ESP_LOGW(TAG, "image is not a home_state node-family app (no family marker)");
+        reset_transfer("not a family app");
+        reply(RSP_END, ST_WRONG_FAMILY, NULL, 0);
         return;
     }
     esp_err_t err = esp_ota_end(s_ota); /* also validates the image */
@@ -302,21 +350,21 @@ static void on_data_write(const uint8_t *p, uint16_t len)
         return;
     }
 
-    /* check the app description before going far: refuse images for another project */
+    /* check the app description early: refuse anything that isn't an ESP-IDF app at all.
+     * Which app it is doesn't matter (boards switch apps); the family check is at END. */
     if (s_received < HEADER_PEEK) {
         uint32_t take = HEADER_PEEK - s_received < n ? HEADER_PEEK - s_received : n;
         memcpy(&s_peek[s_received], data, take);
         if (s_received + take == HEADER_PEEK) {
             const esp_app_desc_t *d = (const esp_app_desc_t *)&s_peek[APP_DESC_OFFSET];
-            if (d->magic_word != ESP_APP_DESC_MAGIC_WORD ||
-                strncmp(d->project_name, esp_app_get_description()->project_name, sizeof(d->project_name)) != 0) {
-                ESP_LOGW(TAG, "image is not %s (got '%.32s')", esp_app_get_description()->project_name,
-                         d->magic_word == ESP_APP_DESC_MAGIC_WORD ? d->project_name : "?");
-                reset_transfer("wrong project");
-                reply_offset(RSP_NAK, ST_WRONG_PROJECT, 0);
+            if (d->magic_word != ESP_APP_DESC_MAGIC_WORD) {
+                ESP_LOGW(TAG, "incoming data is not an ESP-IDF app image");
+                reset_transfer("not an app image");
+                reply_offset(RSP_NAK, ST_IMAGE_INVALID, 0);
                 return;
             }
-            ESP_LOGI(TAG, "incoming image: %.32s %.32s", d->project_name, d->version);
+            ESP_LOGI(TAG, "incoming image: %.32s %.32s (running %s)", d->project_name, d->version,
+                     esp_app_get_description()->project_name);
         }
     }
 
@@ -328,6 +376,7 @@ static void on_data_write(const uint8_t *p, uint16_t len)
         return;
     }
     psa_hash_update(&s_hash, data, n);
+    family_scan(data, n);
     s_received += n;
 }
 
@@ -590,6 +639,7 @@ void ota_mark_valid(void)
 int ota_gatt_init(uint8_t board_id)
 {
     s_board_id = board_id;
+    family_init();
     timers_init();
     if (psa_crypto_init() != PSA_SUCCESS) {
         ESP_LOGE(TAG, "psa_crypto_init failed");

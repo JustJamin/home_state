@@ -87,6 +87,8 @@ static cJSON *m_device_info(const cJSON *params, rpc_error_t *err)
     char bt[18];
     ble_address(bt, sizeof(bt));
     cJSON_AddStringToObject(r, "ble_address", bt);
+    /* any family app can be flashed over any other (ota.c checks FAMILY_MARKER) */
+    cJSON_AddStringToObject(r, "family", "home_state-node");
     cJSON_AddStringToObject(r, "app", app->project_name);
     cJSON_AddStringToObject(r, "version", app->version);
     cJSON_AddStringToObject(r, "idf", app->idf_ver);
@@ -213,6 +215,63 @@ static cJSON *m_ota_status(const cJSON *params, rpc_error_t *err)
     return no_params(params, err) ? ota_status_json() : NULL;
 }
 
+/* readings.read {boot_id?, after_uptime_s?, limit?}: buffered readings for the phone gateway,
+ * oldest first, paged. If boot_id isn't this boot's, the cursor is stale: start from the oldest. */
+static cJSON *m_readings_read(const cJSON *params, rpc_error_t *err)
+{
+    double after = -1, limit = 50; /* no cursor: from the oldest (the first reading is at uptime 0) */
+    if (params && !cJSON_IsObject(params)) {
+        return params_error(err, "", "params must be an object");
+    }
+    const cJSON *b = cJSON_GetObjectItemCaseSensitive(params, "boot_id");
+    const cJSON *a = cJSON_GetObjectItemCaseSensitive(params, "after_uptime_s");
+    const cJSON *l = cJSON_GetObjectItemCaseSensitive(params, "limit");
+    if (b && !cJSON_IsNumber(b)) {
+        return params_error(err, "boot_id", "must be a number");
+    }
+    if (a) {
+        if (!cJSON_IsNumber(a) || a->valuedouble < 0) {
+            return params_error(err, "after_uptime_s", "must be a number >= 0");
+        }
+        after = a->valuedouble;
+    }
+    if (l) {
+        if (!cJSON_IsNumber(l) || l->valuedouble < 1 || l->valuedouble > 50) {
+            return params_error(err, "limit", "must be between 1 and 50");
+        }
+        limit = l->valuedouble;
+    }
+    bool same_boot = !b || (uint32_t)b->valuedouble == hs_boot_id();
+    if (!same_boot) {
+        after = -1;
+    }
+    hs_reading_t buf[50]; /* on the stack: USB and BLE RPC tasks can both be in here */
+    bool more;
+    size_t buffered;
+    size_t n = hs_readings_after((int64_t)after, buf, (size_t)limit, &more, &buffered);
+
+    cJSON *r = cJSON_CreateObject();
+    cJSON_AddNumberToObject(r, "boot_id", hs_boot_id());
+    cJSON_AddBoolToObject(r, "same_boot", same_boot);
+    cJSON_AddNumberToObject(r, "now_uptime_s", (double)(esp_timer_get_time() / 1000000));
+    cJSON_AddNumberToObject(r, "board_id", hs_board_id());
+    cJSON_AddNumberToObject(r, "buffered", buffered);
+    cJSON_AddBoolToObject(r, "more", more);
+    cJSON *list = cJSON_AddArrayToObject(r, "readings");
+    for (size_t i = 0; i < n; i++) {
+        cJSON *o = cJSON_CreateObject();
+        cJSON_AddNumberToObject(o, "c", buf[i].counter);
+        cJSON_AddNumberToObject(o, "u", buf[i].uptime_s);
+        if (buf[i].temp_c_x100 == INT16_MIN) {
+            cJSON_AddNullToObject(o, "t");
+        } else {
+            cJSON_AddNumberToObject(o, "t", buf[i].temp_c_x100 / 100.0);
+        }
+        cJSON_AddItemToArray(list, o);
+    }
+    return r;
+}
+
 static cJSON *m_rpc_discover(const cJSON *params, rpc_error_t *err);
 
 static const struct {
@@ -229,6 +288,7 @@ static const struct {
     {"config.reset", m_config_reset},
     {"board.set_id", m_board_set_id},
     {"ota.status", m_ota_status},
+    {"readings.read", m_readings_read},
 };
 
 static cJSON *m_rpc_discover(const cJSON *params, rpc_error_t *err)

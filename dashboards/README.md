@@ -8,7 +8,7 @@ Four alternatives to Grafana, each built to show off its own stack. They all rea
 | 30301 | [Streamlit](streamlit/app.py) | http://100.79.164.117:30301 | ~80Mi |
 | 30302 | [Plotly Dash](dash/app.py) | http://100.79.164.117:30302 | ~115Mi |
 | 30303 | [NiceGUI](nicegui/app.py) | http://100.79.164.117:30303 | ~80Mi |
-| 30304 | [FastAPI + SSE + plain HTML/JS](fastapi-sse/) | http://100.79.164.117:30304 | ~40Mi |
+| 30304 | [FastAPI + SSE + plain HTML/JS](fastapi-sse/) (live dashboard with device toggles, 15 min–24 h ranges and the alert threshold line, plus the provisioning app) | http://100.79.164.117:30304 | ~40Mi |
 
 All of them hide the dummy temperatures from before 2026-10-04 20:30:52 UTC. Streamlit has a toggle to show them.
 
@@ -52,6 +52,14 @@ All of them hide the dummy temperatures from before 2026-10-04 20:30:52 UTC. Str
     - **JSON** view: the raw script, as a fallback. Both views edit the same script, with live validation.
     - Then **Save config as…** and **Save as profile…**.
   - **Deploy:** pick a profile from the dropdown; only that profile is shown, with its firmware, radio stack and calls. One tap: identify the node (device ID over JSON-RPC), flash if it runs another version, optionally set a board ID, run the script (reconnecting after reboots), and record the result. From the Fleet tab you can **target one node**, and the Bluetooth chooser then offers only that name.
+  - **Apps (v1.3.1):** `single-blink` and `double-blink`, plus the legacy `hs_advertiser` bridge. Each version of each app has its own configs, validated against its own schema. A profile for another app **switches the board's app** on deploy, provided the node has v1.3.1+ firmware or the bridge.
+  - **Alerts (v1.3.1):** the 🔔 in the header opens the alerts panel:
+    - **subscribe this phone** to Web Push, so notifications arrive even with the app closed;
+    - set the **fleet-wide threshold** and its "back to normal" level, stored on the server, which sends the alerts;
+    - **send a test alert**.
+
+    One alert per board when it crosses the threshold, one when it recovers, at most one high alert per 10 min. Tapping a notification opens the dashboard in the app.
+  - **Gateway (v1.3.1, manual collect):** the Gateway tab connects to a node and downloads its buffered last hour of readings (`readings.read`). It works offline. Readings are kept on the phone and uploaded with sync, and the server skips any it already has from the scanner.
   - **Fleet:** devices grouped by the profile they run (their last successful deploy), sorted by profile then board. Each row shows the scanner's **network metrics**: last seen, RSSI, 24 h capture %, missed counters (from `/api/fleet/metrics`). Tap a row to expand details and history, and tap again to collapse. Boards the scanner hears that have no deployment yet are listed separately.
   - **Offline:** configs, profiles and deployments live in the phone's IndexedDB and sync with Postgres (`provisioning` schema) whenever the server is reachable. Records are immutable with client UUIDs, so syncing never conflicts. The service worker keeps the app shell, and Cache Storage keeps the firmware for every profile's version plus the newest version, plus anything marked "keep offline".
   - API: `/api/apps` (catalogue), `/api/apps/<app>/<version>/{firmware.bin,default.config.json,methods.json}`, `/api/sync` (GET `?since=`, POST batch), `/api/fleet`, `/api/fleet/metrics?hours=24`. Docs: [docs/jsonrpc.md](../docs/jsonrpc.md), [docs/ota-protocol.md](../docs/ota-protocol.md).

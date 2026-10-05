@@ -12,3 +12,4 @@ firmware/build-*/
 dashboards/fastapi-sse/firmware/
 firmware/managed_components/
 node_modules/
+firmware/build-*/

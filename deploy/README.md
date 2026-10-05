@@ -102,3 +102,29 @@ kubectl -n home-state exec -i postgres-0 -- env POSTGRES_USER=home_state POSTGRE
 ```sh
 kubectl -n home-state exec -i postgres-0 -- psql -U home_state -v ON_ERROR_STOP=1 < deploy/initdb/005_v1_3.sql
 ```
+
+#### v1.3.1: migration 006 and push keys
+
+`initdb/006_v1_3_1.sql` adds:
+- `readings.source` (`scanner` or `gateway`) and an index;
+- `deployments.from_app`;
+- `push_subscriptions` and `alert_settings` (append-only, the latest row wins);
+- INSERT-only access to `readings` for the provisioning role, for gateway uploads. It gets no read access.
+
+```sh
+kubectl -n home-state exec -i postgres-0 -- psql -U home_state -v ON_ERROR_STOP=1 < deploy/initdb/006_v1_3_1.sql
+```
+
+Temperature alerts use Web Push, which needs a VAPID key pair in the Secret `webpush`, generated once:
+
+```sh
+python3 -c "
+import base64; from cryptography.hazmat.primitives import serialization as s; from py_vapid import Vapid02
+v = Vapid02(); v.generate_keys(); b = lambda x: base64.urlsafe_b64encode(x).rstrip(b'=').decode()
+print(b(v.private_key.private_bytes(s.Encoding.DER, s.PrivateFormat.PKCS8, s.NoEncryption())))
+print(b(v.public_key.public_bytes(s.Encoding.X962, s.PublicFormat.UncompressedPoint)))"
+kubectl -n home-state create secret generic webpush --from-literal=private-key=<first line> \
+  --from-literal=public-key=<second line> --from-literal=subject=https://lenovo.tailc2dfa5.ts.net
+```
+
+The `subject` is sent to the push service as the contact for these alerts. It's the app's URL, not a personal email. The dashboard pod must reach the push services (FCM); pod egress is open.

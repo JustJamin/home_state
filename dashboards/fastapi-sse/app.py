@@ -19,16 +19,19 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from fastapi import FastAPI, Header, Query, Request
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel, Field
 from psycopg.rows import dict_row
 from psycopg_pool import AsyncConnectionPool
 
+import alerts
+import names
 import provisioning
 
 DUMMY_DATA_BEFORE = datetime(2026, 10, 4, 20, 30, 52, tzinfo=timezone.utc)
-COLUMNS = """id, received_at, 'hs-' || lpad(board_id::text, 2, '0') AS board,
-             counter, temp_c, rssi, uptime_s"""
+COLUMNS = """id, received_at, 'hs-' || lpad(board_id::text, 2, '0') AS board, address,
+             counter, temp_c, rssi, uptime_s, source"""
 STATIC = Path(__file__).parent / "static"
 
 pool = AsyncConnectionPool(os.environ["DATABASE_URL"], min_size=1, max_size=4, open=False,
@@ -60,8 +63,12 @@ class Broadcaster:
                 continue
             for r in rows:
                 self.last_id = r["id"]
+                r["label"] = names.label(r["address"], r["board"])
                 for q in self.subscribers:
                     q.put_nowait(r)
+                events = alerts.engine.observe(r["address"], r["label"], r["temp_c"])
+                if events:
+                    asyncio.create_task(alerts.notify(events))
 
 
 broadcaster = Broadcaster()
@@ -70,8 +77,19 @@ broadcaster = Broadcaster()
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     await pool.open()
+    provisioning.readings_pool = pool
     if provisioning.pool:
         await provisioning.pool.open()
+        alerts.pool = provisioning.pool
+        names.pool = provisioning.pool
+        try:
+            await alerts.load_settings()
+        except Exception as e:  # e.g. migration 006 not applied yet: keep the defaults
+            print(f"alert settings not loaded: {e}", flush=True)
+        try:
+            await names.load()
+        except Exception as e:  # e.g. migration 007 not applied yet: no names
+            print(f"device names not loaded: {e}", flush=True)
     task = asyncio.create_task(broadcaster.run())
     yield
     task.cancel()
@@ -81,8 +99,21 @@ async def lifespan(_: FastAPI):
 
 
 app = FastAPI(title="home_state · FastAPI + SSE", lifespan=lifespan)
-app.mount("/static", StaticFiles(directory=STATIC), name="static")
+class RevalidatedStatic(StaticFiles):
+    """Static files the browser must revalidate on every use (cheap: unchanged files get 304).
+    Without this, Chrome's heuristic HTTP cache can keep serving an old module next to new ones
+    (v1.3.1: a stale store.js opened IndexedDB without the new gateway store)."""
+
+    async def get_response(self, path, scope):
+        r = await super().get_response(path, scope)
+        r.headers.setdefault("Cache-Control", "no-cache")
+        return r
+
+
+app.mount("/static", RevalidatedStatic(directory=STATIC), name="static")
 app.include_router(provisioning.router)
+app.include_router(alerts.router)
+app.include_router(names.router)
 
 
 def to_json(r: dict) -> str:
@@ -92,11 +123,14 @@ def to_json(r: dict) -> str:
 @app.get("/api/readings")
 async def readings(minutes: int = Query(60, ge=1, le=10080)) -> list[dict]:
     async with pool.connection() as conn:
-        return await (await conn.execute(
+        rows = await (await conn.execute(
             f"""SELECT {COLUMNS} FROM readings
                 WHERE received_at > now() - make_interval(mins => %s) AND received_at >= %s
                 ORDER BY id""", (minutes, DUMMY_DATA_BEFORE),
         )).fetchall()
+    for r in rows:
+        r["label"] = names.label(r["address"], r["board"])  # the device's fleet name, else hs-NN
+    return rows
 
 
 @app.get("/api/stream")
@@ -114,6 +148,7 @@ async def stream(request: Request, last_event_id: int | None = Header(None)) -> 
                         f"SELECT {COLUMNS} FROM readings WHERE id > %s ORDER BY id",
                         (last_event_id,))).fetchall()
                 for r in missed:
+                    r["label"] = names.label(r["address"], r["board"])
                     sent = r["id"]
                     yield f"id: {r['id']}\nevent: reading\ndata: {to_json(r)}\n\n"
             while not await request.is_disconnected():
@@ -165,6 +200,21 @@ async def fleet_metrics(hours: int = Query(24, ge=1, le=720)) -> list[dict]:
     return rows
 
 
+class ClientLog(BaseModel):
+    kind: str = Field(max_length=20)
+    message: str = Field(max_length=500)
+    stack: str = Field("", max_length=2000)
+    step: str | None = Field(None, max_length=100)
+    ua: str | None = Field(None, max_length=300)
+
+
+@app.post("/api/client-log")
+async def client_log(entry: ClientLog) -> dict:
+    """Start-up errors from the provisioning app (provision.html's guard), into the pod log."""
+    print(f"client-log {entry.kind} step={entry.step!r}: {entry.message} | {entry.ua}\n{entry.stack}", flush=True)
+    return {"ok": True}
+
+
 @app.get("/api/stats")
 async def stats() -> dict:
     return {"browsers_connected": len(broadcaster.subscribers), "last_id": broadcaster.last_id}
@@ -175,9 +225,15 @@ async def index() -> FileResponse:
     return FileResponse(STATIC / "index.html", headers={"Cache-Control": "no-cache"})
 
 
-@app.get("/provision")
-async def provision() -> FileResponse:
+@app.get("/admin")
+async def admin() -> FileResponse:
     return FileResponse(STATIC / "provision.html", headers={"Cache-Control": "no-cache"})
+
+
+@app.get("/provision")
+async def provision_moved() -> RedirectResponse:
+    """The Admin app used to be called Provision: keep old links and bookmarks working."""
+    return RedirectResponse("/admin", status_code=308)
 
 
 # PWA: the service worker must be served from / so its scope covers the whole app

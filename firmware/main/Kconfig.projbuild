@@ -1,4 +1,25 @@
-menu "home_state advertiser"
+menu "home_state node"
+
+    choice HS_APP
+        prompt "Node app"
+        default HS_APP_SINGLE_BLINK
+        help
+            Set by firmware/apps/<app>/app.defaults; must match the project name
+            (-DHS_APP=<app>). Chooses the LED pattern and the app's settings.
+        config HS_APP_SINGLE_BLINK
+            bool "single-blink"
+        config HS_APP_DOUBLE_BLINK
+            bool "double-blink"
+        config HS_APP_HS_ADVERTISER
+            bool "hs_advertiser (legacy bridge)"
+    endchoice
+
+    config HS_APP_NAME
+        string
+        default "single-blink" if HS_APP_SINGLE_BLINK
+        default "double-blink" if HS_APP_DOUBLE_BLINK
+        default "hs_advertiser" if HS_APP_HS_ADVERTISER
+
 
     config HS_BOARD_ID
         int "Board ID"

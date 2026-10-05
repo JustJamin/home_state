@@ -63,8 +63,9 @@ Status codes:
 | 4 | BAD_OFFSET |
 | 5 | HASH |
 | 6 | IMAGE_INVALID |
-| 7 | WRONG_PROJECT (checked from the app description in the first 112 bytes) |
+| 7 | WRONG_PROJECT (v1.1–v1.3.0: the image had to be the same app; no longer sent) |
 | 8 | BAD_CMD |
+| 9 | WRONG_FAMILY (v1.3.1+): END refused because the image doesn't carry the node-family marker. Any family app (single-blink, double-blink, ...) is accepted, so boards can switch apps |
 
 ## Transfer
 

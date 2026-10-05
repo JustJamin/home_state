@@ -8,7 +8,10 @@
       "params": {
         "update_interval_ms": 5000,
         "adv_interval_ms": 1000,
-        "led": {"mode": "blink", "blink_hz": 1}
+        "led": {
+          "mode": "blink",
+          "blink_hz": 1
+        }
       }
     }
   ]

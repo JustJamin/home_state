@@ -266,6 +266,13 @@ spec:
                   key: db-password
             - name: PROVISIONING_DATABASE_URL
               value: postgresql://provisioning:$(PROVISIONING_DB_PASSWORD)@db:5432/home_state
+            # Web Push (temperature alerts): VAPID keys, generated once (deploy/README.md)
+            - name: VAPID_PRIVATE_KEY
+              valueFrom: {secretKeyRef: {name: webpush, key: private-key}}
+            - name: VAPID_PUBLIC_KEY
+              valueFrom: {secretKeyRef: {name: webpush, key: public-key}}
+            - name: VAPID_SUBJECT
+              valueFrom: {secretKeyRef: {name: webpush, key: subject}}
           ports:
             - name: http
               containerPort: 8000

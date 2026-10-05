@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { Node, flash, parseImage, OtaError } from "./static/ota.js";
 
-const imagePath = process.argv[2] ?? new URL("../../firmware/build/hs_advertiser.bin", import.meta.url).pathname;
+const imagePath = process.argv[2] ?? new URL("../../firmware/build-single-blink/single-blink.bin", import.meta.url).pathname;
 const image = readFileSync(imagePath);
 const buf = image.buffer.slice(image.byteOffset, image.byteOffset + image.length);
 

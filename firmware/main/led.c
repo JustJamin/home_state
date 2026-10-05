@@ -1,17 +1,18 @@
 /*
- * User LED: XIAO ESP32-C6 has a yellow LED on GPIO15, lit when the pin is LOW.
- * Modes come from settings (led.mode, led.blink_hz); device.identify overrides
- * them with a fast blink for a few seconds.
+ * User LED: XIAO ESP32-C6 has one controllable LED on GPIO15, lit when the pin is LOW
+ * (the red one is the hardware charge LED). The pattern belongs to the app
+ * (app_led_cycle); device.identify overrides it with a fast blink for a few seconds.
  */
 #include "driver/gpio.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
+#include "app.h"
 #include "hs.h"
 
-#define LED_GPIO GPIO_NUM_15
-#define LED_ON   0
+#define LED_GPIO      GPIO_NUM_15
+#define LED_ON        0
 #define LED_OFF_LEVEL 1
 
 static volatile int64_t s_identify_until_us;
@@ -36,39 +37,9 @@ static void led_task(void *arg)
             vTaskDelay(pdMS_TO_TICKS(60));
             continue;
         }
-        const hs_settings_t *s = settings_get();
-        switch (s->led_mode) {
-        case LED_OFF:
-            set(false);
-            vTaskDelay(pdMS_TO_TICKS(200));
-            break;
-        case LED_BLINK: {
-            /* 50% duty cycle at blink_hz; re-read settings every half period */
-            uint32_t half_ms = (uint32_t)(500.0f / s->led_blink_hz);
-            if (half_ms < 20) {
-                half_ms = 20;
-            }
-            set(true);
-            vTaskDelay(pdMS_TO_TICKS(half_ms));
-            set(false);
-            vTaskDelay(pdMS_TO_TICKS(half_ms));
-            break;
-        }
-        case LED_HEARTBEAT: {
-            /* two short pulses, then rest; one cycle per 1/blink_hz seconds */
-            uint32_t period_ms = (uint32_t)(1000.0f / s->led_blink_hz);
-            uint32_t rest = period_ms > 400 ? period_ms - 400 : 0;
-            set(true);
-            vTaskDelay(pdMS_TO_TICKS(80));
-            set(false);
-            vTaskDelay(pdMS_TO_TICKS(120));
-            set(true);
-            vTaskDelay(pdMS_TO_TICKS(80));
-            set(false);
-            vTaskDelay(pdMS_TO_TICKS(120 + rest));
-            break;
-        }
-        }
+        /* copy, so a config.set mid-cycle can't tear the settings we're using */
+        app_led_t led = settings_get()->led;
+        app_led_cycle(&led, set);
     }
 }
 
