@@ -14,4 +14,19 @@ menu "home_state advertiser"
         help
             How often the counter and dummy readings are refreshed in the advert.
 
+    config HS_TEST_NEVER_VALID
+        bool "TEST: never mark a new OTA image valid"
+        default n
+        help
+            Rollback test build. After an OTA the image stays pending, the 60 s
+            verify timer fires and the bootloader goes back to the previous image.
+
+    config HS_TEST_PANIC_ON_BOOT
+        bool "TEST: abort() at boot"
+        default n
+        help
+            Rollback test build. The image crashes on boot, so the bootloader
+            rolls back to the previous image. Never flash this over USB:
+            with no previous image it would boot-loop.
+
 endmenu

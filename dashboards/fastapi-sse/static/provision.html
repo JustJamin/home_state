@@ -1,0 +1,240 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>home_state · Provision</title>
+<style>
+  :root { --bg: #f7f7f9; --card: #fff; --fg: #1d1d22; --muted: #6b6b76; --line: #e3e3e8;
+          --ok: #1a7f37; --bad: #cf222e; --warn: #9a6700; --accent: #3b6fe0; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #15161a; --card: #1e2026; --fg: #e8e8ec; --muted: #9a9aa6; --line: #2e3038;
+            --ok: #3fb950; --bad: #f85149; --warn: #d29922; --accent: #7aa2ff; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 16px/1.45 system-ui, sans-serif; background: var(--bg); color: var(--fg); }
+  main { max-width: 720px; margin: 0 auto; padding: 16px; }
+  header { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+  h1 { margin: 0 0 4px; font-size: 1.4rem; }
+  a { color: var(--accent); }
+  .muted { color: var(--muted); font-size: .9rem; }
+  section { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px; margin: 12px 0; }
+  h2 { font-size: 1rem; margin: 0 0 10px; }
+  h2 .n { display: inline-block; width: 1.5em; height: 1.5em; border-radius: 50%; background: var(--accent); color: #fff;
+          text-align: center; line-height: 1.5em; font-size: .85rem; margin-right: 6px; }
+  label.fw { display: flex; gap: 10px; align-items: flex-start; padding: 8px; border-radius: 8px; cursor: pointer; }
+  label.fw:hover { background: var(--bg); }
+  label.fw input { margin-top: 4px; }
+  button { font: inherit; padding: 12px 18px; border-radius: 10px; border: 0; background: var(--accent); color: #fff;
+           font-weight: 600; width: 100%; margin-top: 8px; }
+  button:disabled { opacity: .45; }
+  button.secondary { background: transparent; color: var(--accent); border: 1px solid var(--line); }
+  .kv { display: grid; grid-template-columns: max-content 1fr; gap: 2px 12px; font-variant-numeric: tabular-nums; }
+  .kv dt { color: var(--muted); }
+  .kv dd { margin: 0; word-break: break-all; }
+  progress { width: 100%; height: 18px; }
+  .msg { padding: 10px 12px; border-radius: 8px; margin-top: 10px; display: none; }
+  .msg.show { display: block; }
+  .msg.ok { background: color-mix(in srgb, var(--ok) 15%, transparent); color: var(--ok); }
+  .msg.bad { background: color-mix(in srgb, var(--bad) 15%, transparent); color: var(--bad); }
+  .msg.warn { background: color-mix(in srgb, var(--warn) 15%, transparent); color: var(--warn); }
+  pre#log { font-size: .78rem; max-height: 220px; overflow: auto; white-space: pre-wrap; margin: 0; color: var(--muted); }
+  input[type=file] { margin-top: 6px; max-width: 100%; }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <div><h1>📡 Provision a node</h1><div class="muted">Upload firmware to a home_state board over Bluetooth</div></div>
+    <a href="./">‹ Dashboard</a>
+  </header>
+
+  <div id="unsupported" class="msg bad"></div>
+
+  <section>
+    <h2><span class="n">1</span>Choose firmware</h2>
+    <div id="fw-list" class="muted">Loading releases…</div>
+    <div class="muted" style="margin-top:8px">…or a local file:</div>
+    <input type="file" id="fw-file" accept=".bin,application/octet-stream">
+    <dl class="kv" id="fw-meta" style="margin-top:10px"></dl>
+  </section>
+
+  <section>
+    <h2><span class="n">2</span>Connect to a node</h2>
+    <div class="muted" id="seen"></div>
+    <button id="connect">Choose a nearby node…</button>
+    <dl class="kv" id="node-info" style="margin-top:10px"></dl>
+    <div id="compat" class="msg"></div>
+  </section>
+
+  <section>
+    <h2><span class="n">3</span>Flash</h2>
+    <label class="muted"><input type="checkbox" id="with-response"> Reliable mode (write with response; slower)</label>
+    <button id="flash" disabled>Flash firmware</button>
+    <div style="margin-top:10px"><progress id="progress" max="1" value="0"></progress></div>
+    <div class="muted" id="rate">&nbsp;</div>
+    <div id="result" class="msg"></div>
+  </section>
+
+  <section>
+    <h2>Log</h2>
+    <pre id="log"></pre>
+  </section>
+</main>
+
+<script type="module">
+import { Node, parseImage, flash, reconnectInfo, OtaError } from "./static/ota.js";
+
+const $ = id => document.getElementById(id);
+const state = { image: null, meta: null, node: null, nodeInfo: null };
+
+function log(msg) {
+  $("log").textContent += `${new Date().toLocaleTimeString()}  ${msg}\n`;
+  $("log").scrollTop = $("log").scrollHeight;
+}
+function message(id, kind, text) {
+  const el = $(id);
+  el.className = text ? `msg show ${kind}` : "msg";
+  el.textContent = text || "";
+}
+function kv(id, pairs) {
+  $(id).innerHTML = pairs.map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join("");
+}
+const kb = n => `${(n / 1024).toFixed(0)} KB`;
+
+function refresh() {
+  // compatibility checks between the chosen image and the connected node
+  let block = false, warn = "";
+  if (state.meta && state.nodeInfo) {
+    if (state.meta.project !== state.nodeInfo.proj) {
+      block = true;
+      message("compat", "bad", `This image is for "${state.meta.project}", but the node runs "${state.nodeInfo.proj}".`);
+    } else if (state.meta.version === state.nodeInfo.fw) {
+      warn = `The node already runs ${state.meta.version}; flashing will reinstall it.`;
+    } else if (state.nodeInfo.ota !== "idle") {
+      warn = `The node reports an OTA in progress (${state.nodeInfo.ota}); flashing restarts it.`;
+    }
+    if (!block) message("compat", warn ? "warn" : "ok", warn || `Ready: ${state.nodeInfo.fw} → ${state.meta.version}`);
+  }
+  $("flash").disabled = !(state.image && state.node?.connected && !block);
+}
+
+async function selectImage(buf, label) {
+  try {
+    state.meta = parseImage(buf);
+    state.image = buf;
+    kv("fw-meta", [["selected", label], ["project", state.meta.project], ["version", state.meta.version],
+                   ["ESP-IDF", state.meta.idf], ["size", kb(state.meta.size)]]);
+    log(`selected ${label}: ${state.meta.project} ${state.meta.version}`);
+  } catch (e) {
+    state.image = state.meta = null;
+    kv("fw-meta", [["error", e.message]]);
+  }
+  refresh();
+}
+
+async function loadReleases() {
+  try {
+    const list = await (await fetch("api/firmware")).json();
+    if (!list.length) { $("fw-list").textContent = "No releases on the server."; return; }
+    $("fw-list").innerHTML = list.map((f, i) => `
+      <label class="fw"><input type="radio" name="fw" value="${i}">
+        <span><b>${f.version}</b> <span class="muted">· ${kb(f.size)} · built ${f.built.replace("T", " ")}</span></span>
+      </label>`).join("");
+    $("fw-list").classList.remove("muted");
+    $("fw-list").addEventListener("change", async e => {
+      const f = list[+e.target.value];
+      log(`downloading ${f.file}…`);
+      const buf = await (await fetch(`api/firmware/${encodeURIComponent(f.file)}`)).arrayBuffer();
+      const hex = [...new Uint8Array(await crypto.subtle.digest("SHA-256", buf))].map(x => x.toString(16).padStart(2, "0")).join("");
+      if (hex !== f.sha256) { log("download corrupted (sha256 mismatch)"); return; }
+      selectImage(buf, f.file);
+    });
+  } catch (e) {
+    $("fw-list").textContent = `Couldn't load releases (${e.message}). You can still pick a local file.`;
+  }
+}
+
+async function loadSeen() {
+  // what lenovo's scanner has heard recently: a hint for which node to pick
+  try {
+    const rows = await (await fetch("api/readings?minutes=10")).json();
+    const last = {};
+    for (const r of rows) last[r.board] = r;
+    const items = Object.values(last).map(r =>
+      `${r.board} (${r.rssi} dBm, ${Math.round((Date.now() - Date.parse(r.received_at)) / 1000)} s ago)`);
+    $("seen").textContent = items.length ? `Heard by the scanner recently: ${items.join(", ")}` : "";
+  } catch { /* offline: no hint */ }
+}
+
+$("fw-file").addEventListener("change", async e => {
+  const f = e.target.files[0];
+  if (f) selectImage(await f.arrayBuffer(), f.name);
+});
+
+$("connect").addEventListener("click", async () => {
+  try {
+    state.node?.disconnect();
+    state.node = await Node.choose();
+    state.node.device.addEventListener("gattserverdisconnected", () => { log("disconnected"); refresh(); });
+    state.nodeInfo = await state.node.readInfo();
+    const i = state.nodeInfo;
+    kv("node-info", [["node", state.node.device.name], ["firmware", i.fw], ["partition", `${i.part} (${i.state})`],
+                     ["board ID", i.board], ["MTU", i.mtu], ["rolled back from", i.rolled_back_from ?? "–"]]);
+    log(`connected to ${state.node.device.name}: ${i.fw} in ${i.part}`);
+  } catch (e) {
+    if (e.name !== "NotFoundError") log(`connect failed: ${e.message}`);  // NotFoundError = chooser cancelled
+  }
+  refresh();
+});
+
+$("flash").addEventListener("click", async () => {
+  const target = state.meta.version;
+  $("flash").disabled = $("connect").disabled = true;
+  message("result", "", "");
+  let lock = null;
+  try { lock = await navigator.wakeLock?.request("screen"); } catch { /* not fatal */ }
+  try {
+    await flash(state.node, state.image, {
+      withResponse: $("with-response").checked,
+      onLog: log,
+      onProgress: ({ sent, total, rate }) => {
+        $("progress").value = sent / total;
+        const eta = (total - sent) / rate;
+        $("rate").textContent = `${kb(sent)} / ${kb(total)} · ${(rate / 1024).toFixed(1)} KB/s · ${Math.ceil(eta)} s left`;
+      },
+    });
+    message("result", "warn", "Rebooting node… waiting for it to come back");
+    const info = await reconnectInfo(state.node, { onLog: log });
+    state.nodeInfo = info;
+    kv("node-info", [["node", state.node.device.name], ["firmware", info.fw], ["partition", `${info.part} (${info.state})`],
+                     ["board ID", info.board], ["MTU", info.mtu], ["rolled back from", info.rolled_back_from ?? "–"]]);
+    if (info.fw === target && info.state === "valid") {
+      message("result", "ok", `✓ ${state.node.device.name} is running ${target}`);
+    } else if (info.fw === target) {
+      message("result", "warn", `${target} booted but hasn't confirmed itself yet; it rolls back automatically if it fails within 60 s.`);
+    } else {
+      message("result", "bad", `Node is running ${info.fw}, not ${target}${info.rolled_back_from ? ` (rolled back from ${info.rolled_back_from})` : ""}.`);
+    }
+    log(`after reboot: ${info.fw} in ${info.part} (${info.state})`);
+  } catch (e) {
+    message("result", "bad", e instanceof OtaError ? e.message : `Failed: ${e.message}`);
+    log(`FAILED: ${e.message}`);
+  } finally {
+    lock?.release();
+    $("connect").disabled = false;
+    refresh();
+  }
+});
+
+if (!navigator.bluetooth) {
+  message("unsupported", "bad", window.isSecureContext
+    ? "This browser has no Web Bluetooth. Use Chrome on Android."
+    : "Web Bluetooth needs HTTPS. Open this page via https://lenovo.tailc2dfa5.ts.net/provision");
+  $("connect").disabled = true;
+}
+loadReleases();
+loadSeen();
+</script>
+</body>
+</html>

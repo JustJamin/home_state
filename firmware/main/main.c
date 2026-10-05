@@ -1,5 +1,6 @@
 /*
- * home_state transmitter: broadcasts readings in BLE legacy advertising packets.
+ * home_state transmitter: broadcasts readings in BLE legacy advertising packets,
+ * and accepts firmware updates over BLE (ota.c).
  * Payload format (manufacturer-specific data) is documented in the repo README.
  */
 #include <math.h>
@@ -10,11 +11,16 @@
 #include "driver/temperature_sensor.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
 #include "freertos/task.h"
 #include "host/ble_hs.h"
 #include "nimble/nimble_port.h"
 #include "nimble/nimble_port_freertos.h"
+#include "nvs.h"
 #include "nvs_flash.h"
+#include "services/gap/ble_svc_gap.h"
+
+#include "ota.h"
 
 #define HS_COMPANY_ID      0xFFFF
 #define HS_PAYLOAD_VERSION 1
@@ -27,10 +33,13 @@
 static const char *TAG = "hs";
 
 static char s_name[8];
+static uint8_t s_board_id;
 static uint8_t s_own_addr_type;
 static uint8_t s_mfg[HS_MFG_LEN];
 static uint16_t s_counter;
 static temperature_sensor_handle_t s_tsens;
+static uint16_t s_conn = BLE_HS_CONN_HANDLE_NONE;
+static SemaphoreHandle_t s_adv_lock;
 
 static void put_u16_le(uint8_t *p, uint16_t v)
 {
@@ -57,16 +66,44 @@ static void build_payload(void)
 
     put_u16_le(&s_mfg[0], HS_COMPANY_ID);
     s_mfg[2] = HS_PAYLOAD_VERSION;
-    s_mfg[3] = CONFIG_HS_BOARD_ID;
+    s_mfg[3] = s_board_id;
     put_u16_le(&s_mfg[4], s_counter);
     put_u16_le(&s_mfg[6], (uint16_t)temp_c_x100);
     put_u16_le(&s_mfg[8], uptime_s);
 }
 
-static int set_adv_fields(void)
+/* Board ID lives in NVS so one firmware image fits every board. It's seeded
+ * from CONFIG_HS_BOARD_ID the first time a board boots with an empty NVS. */
+static uint8_t load_board_id(void)
 {
-    struct ble_hs_adv_fields fields = {0};
+    nvs_handle_t h;
+    uint8_t id = CONFIG_HS_BOARD_ID;
+    ESP_ERROR_CHECK(nvs_open("hs", NVS_READWRITE, &h));
+    esp_err_t err = nvs_get_u8(h, "board_id", &id);
+    if (err == ESP_ERR_NVS_NOT_FOUND) {
+        id = CONFIG_HS_BOARD_ID;
+        ESP_ERROR_CHECK(nvs_set_u8(h, "board_id", id));
+        ESP_ERROR_CHECK(nvs_commit(h));
+        ESP_LOGI(TAG, "board ID %u stored in NVS", id);
+    } else {
+        ESP_ERROR_CHECK(err);
+    }
+    nvs_close(h);
+    return id;
+}
 
+static int gap_event(struct ble_gap_event *event, void *arg);
+
+/* Restart advertising with the current payload. Connectable while nobody is
+ * connected; non-connectable while connected (we allow one connection, and
+ * readings must keep flowing during an OTA). Called from the update task and
+ * the GAP event handler, hence the lock. */
+static int adv_restart(void)
+{
+    xSemaphoreTake(s_adv_lock, portMAX_DELAY);
+    bool connected = s_conn != BLE_HS_CONN_HANDLE_NONE;
+
+    struct ble_hs_adv_fields fields = {0};
     fields.flags = BLE_HS_ADV_F_DISC_GEN | BLE_HS_ADV_F_BREDR_UNSUP;
     fields.name = (uint8_t *)s_name;
     fields.name_len = strlen(s_name);
@@ -74,19 +111,20 @@ static int set_adv_fields(void)
     fields.mfg_data = s_mfg;
     fields.mfg_data_len = sizeof(s_mfg);
 
-    return ble_gap_adv_set_fields(&fields);
-}
-
-static int start_adv(void)
-{
     struct ble_gap_adv_params params = {
-        .conn_mode = BLE_GAP_CONN_MODE_NON,
+        .conn_mode = connected ? BLE_GAP_CONN_MODE_NON : BLE_GAP_CONN_MODE_UND,
         .disc_mode = BLE_GAP_DISC_MODE_GEN,
         .itvl_min = HS_ADV_ITVL,
         .itvl_max = HS_ADV_ITVL,
     };
 
-    return ble_gap_adv_start(s_own_addr_type, NULL, BLE_HS_FOREVER, &params, NULL, NULL);
+    ble_gap_adv_stop();
+    int rc = ble_gap_adv_set_fields(&fields);
+    if (rc == 0) {
+        rc = ble_gap_adv_start(s_own_addr_type, NULL, BLE_HS_FOREVER, &params, gap_event, NULL);
+    }
+    xSemaphoreGive(s_adv_lock);
+    return rc;
 }
 
 static void log_payload(void)
@@ -96,7 +134,8 @@ static void log_payload(void)
     for (int i = 0; i < HS_MFG_LEN; i++) {
         sprintf(&hex[i * 2], "%02x", s_mfg[i]);
     }
-    ESP_LOGI(TAG, "%s counter=%u mfr=%s", s_name, s_counter, hex);
+    ESP_LOGI(TAG, "%s counter=%u mfr=%s%s", s_name, s_counter, hex,
+             s_conn != BLE_HS_CONN_HANDLE_NONE ? " (connected)" : "");
 }
 
 static void update_task(void *arg)
@@ -107,17 +146,45 @@ static void update_task(void *arg)
         s_counter++;
         build_payload();
 
-        ble_gap_adv_stop();
-        int rc = set_adv_fields();
-        if (rc == 0) {
-            rc = start_adv();
-        }
+        int rc = adv_restart();
         if (rc != 0) {
             ESP_LOGE(TAG, "advert update failed: rc=%d", rc);
             continue;
         }
         log_payload();
+        /* sync + GATT + adverts all work: this image is good */
+        ota_mark_valid();
     }
+}
+
+static int gap_event(struct ble_gap_event *event, void *arg)
+{
+    switch (event->type) {
+    case BLE_GAP_EVENT_CONNECT:
+        if (event->connect.status == 0) {
+            s_conn = event->connect.conn_handle;
+            ota_on_connect(s_conn);
+        } else {
+            ESP_LOGW(TAG, "connect failed: status=%d", event->connect.status);
+        }
+        adv_restart();  /* connectable adverts stop on connect; keep broadcasting, non-connectable */
+        break;
+    case BLE_GAP_EVENT_DISCONNECT:
+        ESP_LOGI(TAG, "disconnected: reason=0x%x", event->disconnect.reason);
+        s_conn = BLE_HS_CONN_HANDLE_NONE;
+        ota_on_disconnect();
+        adv_restart();  /* connectable again */
+        break;
+    case BLE_GAP_EVENT_SUBSCRIBE:
+        ota_on_subscribe(event->subscribe.attr_handle, event->subscribe.cur_notify);
+        break;
+    case BLE_GAP_EVENT_MTU:
+        ESP_LOGI(TAG, "mtu %u", event->mtu.value);
+        break;
+    default:
+        break;
+    }
+    return 0;
 }
 
 static void on_sync(void)
@@ -133,11 +200,18 @@ static void on_sync(void)
     ESP_LOGI(TAG, "address %02x:%02x:%02x:%02x:%02x:%02x",
              addr[5], addr[4], addr[3], addr[2], addr[1], addr[0]);
 
-    build_payload();
-    rc = set_adv_fields();
-    if (rc == 0) {
-        rc = start_adv();
+    /* scan response: the OTA service UUID (no room for it in the 31-byte advert) */
+    struct ble_hs_adv_fields rsp = {0};
+    rsp.uuids128 = (ble_uuid128_t *)ota_service_uuid();
+    rsp.num_uuids128 = 1;
+    rsp.uuids128_is_complete = 1;
+    rc = ble_gap_adv_rsp_set_fields(&rsp);
+    if (rc != 0) {
+        ESP_LOGE(TAG, "scan response failed: rc=%d", rc);
     }
+
+    build_payload();
+    rc = adv_restart();
     if (rc != 0) {
         ESP_LOGE(TAG, "advertising start failed: rc=%d", rc);
         return;
@@ -167,7 +241,15 @@ void app_main(void)
     }
     ESP_ERROR_CHECK(err);
 
-    snprintf(s_name, sizeof(s_name), "hs-%02u", CONFIG_HS_BOARD_ID);
+    ota_boot_check();
+#if CONFIG_HS_TEST_PANIC_ON_BOOT
+    ESP_LOGE(TAG, "HS_TEST_PANIC_ON_BOOT: crashing on purpose (rollback test)");
+    abort();
+#endif
+
+    s_board_id = load_board_id();
+    snprintf(s_name, sizeof(s_name), "hs-%02u", s_board_id);
+    s_adv_lock = xSemaphoreCreateMutex();
 
     /* -10..80 C is the range with the best accuracy on the C6 */
     temperature_sensor_config_t tsens_cfg = TEMPERATURE_SENSOR_CONFIG_DEFAULT(-10, 80);
@@ -177,6 +259,9 @@ void app_main(void)
     ESP_ERROR_CHECK(nimble_port_init());
     ble_hs_cfg.sync_cb = on_sync;
     ble_hs_cfg.reset_cb = on_reset;
+
+    ESP_ERROR_CHECK(ota_gatt_init(s_board_id) == 0 ? ESP_OK : ESP_FAIL);
+    ESP_ERROR_CHECK(ble_svc_gap_device_name_set(s_name) == 0 ? ESP_OK : ESP_FAIL);
 
     nimble_port_freertos_init(host_task);
 }

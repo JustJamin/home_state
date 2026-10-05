@@ -32,6 +32,7 @@ This project is blocked on these host items. They're tracked under `## home_stat
 - Docker + Compose (step 4)
 - k3s single-node (step 5)
 - Local image registry on `127.0.0.1:5000` that k3s pulls the scanner image from (step 5)
+- Tailscale HTTPS + `tailscale serve` → https://lenovo.tailc2dfa5.ts.net/ for the provisioning page, because Web Bluetooth needs HTTPS (v1.1.0)
 
 ---
 
@@ -71,7 +72,8 @@ home_state/
   scanner/      <- Python BLE scanner + Dockerfile
   deploy/       <- compose.yaml, k8s/ manifests
   dashboards/   <- alternative dashboards (Streamlit, Dash, NiceGUI, FastAPI+SSE)
-  docs/         <- payload format, notes
+  docs/         <- payload format, OTA protocol
+  tools/        <- bench tools (BLE OTA client)
 ```
 
 ## Status
@@ -84,6 +86,8 @@ home_state/
 - [x] k3s deployment
 - [x] Grafana dashboard (k3s, tailnet-only: http://100.79.164.117:30300)
 - [x] Demo dashboards: Streamlit, Dash, NiceGUI, FastAPI+SSE on ports 30301–30304 (see `dashboards/README.md`)
+- [ ] v1.1.0: provision nodes over BLE from the phone (`/provision`, [docs/ota-protocol.md](docs/ota-protocol.md))
+- [ ] v1.2.0: provisioning works offline (PWA)
 - [ ] Real sensors
 - [ ] Database backups
 
