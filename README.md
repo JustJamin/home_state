@@ -87,7 +87,7 @@ home_state/
 - [x] Grafana dashboard (k3s, tailnet-only: http://100.79.164.117:30300)
 - [x] Demo dashboards: Streamlit, Dash, NiceGUI, FastAPI+SSE on ports 30301–30304 (see `dashboards/README.md`)
 - [x] v1.1.0: provision nodes over BLE from the phone (`/provision`, [docs/ota-protocol.md](docs/ota-protocol.md))
-- [ ] v1.2.0: JSON-RPC on nodes (USB + BLE), firmware/config/profile catalogue, one-touch fleet deploys, offline PWA
+- [x] v1.2.0: JSON-RPC on nodes (USB + BLE), firmware/config/profile catalogue, one-touch fleet deploys, offline PWA
 - [ ] Real sensors
 - [ ] Database backups
 
