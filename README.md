@@ -89,7 +89,7 @@ home_state/
 - [x] v1.1.0: provision nodes over BLE from the phone (`/provision`, [docs/ota-protocol.md](docs/ota-protocol.md))
 - [x] v1.2.0: JSON-RPC on nodes (USB + BLE), firmware/config/profile catalogue, one-touch fleet deploys, offline PWA
 - [x] v1.3.0: config builder form, Lacuna theme, fleet overview with network metrics, radio stack (RF module) version on profiles, deploy dropdown + fleet targeting, second board (hs-02)
-- [x] v1.3.1: two node apps (single-blink, double-blink), each with its own JSON-RPC config, switchable over the air; dashboard device toggles, time ranges and threshold line; temperature push alerts with a threshold set in the app; phone gateway (manual collect)
+- [x] v1.3.1: two node apps (single-blink, double-blink), each with its own JSON-RPC config, switchable over the air; dashboard device toggles, time ranges and threshold line; temperature push alerts with a threshold set in the app; phone gateway (manual collect); the app is now "Server Temp" (opens on the dashboard) with an Admin side (Fleet, Profile, Deploy, Gateway); fleet device names
 - [ ] v1.4.0: phone as a Bluetooth gateway, beyond v1.3.1's manual collect. The phone receives node data and pushes it to the server when it has internet. Chrome on Android has no general advert scanning (`requestLEScan` is still behind a flag), so the node likely needs a GATT "readings" characteristic or a buffered log the phone reads over a connection.
 - [ ] Real sensors
 - [ ] Database backups
