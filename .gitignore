@@ -11,3 +11,4 @@ firmware/build-*/
 # firmware releases served by the provisioning page (durable copies: ~/home_state-firmware on lenovo)
 dashboards/fastapi-sse/firmware/
 firmware/managed_components/
+node_modules/

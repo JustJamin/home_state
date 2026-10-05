@@ -1,4 +1,6 @@
-// Provisioning app UI: Build (app -> version -> config -> profile), Deploy (one-touch), Fleet.
+// Provisioning app UI: Deploy (pick a profile, one-touch), Build (app -> version -> radio
+// stack -> config -> profile, with a form builder or raw JSON), Fleet (devices grouped by
+// profile, with the scanner's network metrics).
 // Works offline: data in IndexedDB (store.js), firmware in Cache Storage (catalogue.js),
 // the page itself from the service worker (sw.js). Syncs with the server when reachable.
 
@@ -8,6 +10,8 @@ import { Catalogue } from "./catalogue.js";
 import { validateScript, scriptableMethods } from "./schema.js";
 import { Node } from "./ota.js";
 import { deploy } from "./deploy.js";
+import * as B from "./builder.js";
+import { buildFleetView, seenState } from "./fleetview.js";
 
 const $ = id => document.getElementById(id);
 const CLIENT = `provision/${navigator.userAgent.match(/Chrome\/[\d.]+/)?.[0] ?? "browser"}`;
@@ -19,26 +23,37 @@ function h(tag, props = {}, ...children) {
   for (const [k, v] of Object.entries(props)) {
     if (k.startsWith("on")) el.addEventListener(k.slice(2), v);
     else if (k === "class") el.className = v;
+    else if (k === "value") el.value = v;
+    else if (k === "checked" || k === "disabled" || k === "selected") el[k] = !!v;
     else if (v !== false && v != null) el.setAttribute(k, v === true ? "" : v);
   }
   for (const c of children.flat()) if (c != null) el.append(c?.nodeType ? c : String(c)); // DOM node or text
   return el;
 }
 const ago = iso => {
+  if (!iso) return "never";
   const s = (Date.now() - Date.parse(iso)) / 1000;
-  if (s < 60) return "just now";
+  if (s < 60) return `${Math.max(0, Math.round(s))} s ago`;
   if (s < 3600) return `${Math.round(s / 60)} min ago`;
   if (s < 86400) return `${Math.round(s / 3600)} h ago`;
   return new Date(iso).toLocaleDateString();
 };
 const kb = n => `${(n / 1024).toFixed(0)} KB`;
+const boardName = id => `hs-${String(id).padStart(2, "0")}`;
+const pretty = s => JSON.stringify(s, null, 2);
+const compact = p => (p === undefined ? "" : JSON.stringify(p));
 
 // ---------------- startup ----------------
 
 const store = await IdbStore.open();
 const sync = new Sync(store);
 const catalogue = new Catalogue(store);
-const ui = { apps: [], methods: null, defaultScript: null, configs: [], dirty: false };
+const ui = {
+  apps: [], methods: null, defaultScript: null, configs: [], script: { calls: [] }, dirty: false,
+  mode: "form", jsonError: null, target: null, profiles: [], metrics: (await store.getMeta("metrics")) ?? null,
+  loadedVersion: null, loadedConfig: null, // what the Build editor currently shows (kept across background refreshes)
+  expanded: new Set(),
+};
 
 if ("serviceWorker" in navigator) navigator.serviceWorker.register("/sw.js").catch(e => console.warn("sw:", e));
 navigator.storage?.persist?.();
@@ -53,13 +68,14 @@ if (!navigator.bluetooth) {
 
 // ---------------- tabs + status ----------------
 
-for (const b of document.querySelectorAll("nav.tabs button")) {
-  b.addEventListener("click", () => {
-    for (const x of document.querySelectorAll("nav.tabs button")) x.classList.toggle("active", x === b);
-    for (const p of document.querySelectorAll("[data-panel]")) p.classList.toggle("hidden", p.dataset.panel !== b.dataset.tab);
-    if (b.dataset.tab === "fleet") renderFleet();
-  });
+function showTab(name) {
+  for (const x of document.querySelectorAll("nav.tabs button")) x.classList.toggle("active", x.dataset.tab === name);
+  for (const p of document.querySelectorAll("[data-panel]")) p.classList.toggle("hidden", p.dataset.panel !== name);
+  if (name === "fleet") { renderFleet(); refreshMetrics(); }
+  window.scrollTo({ top: 0 });
 }
+for (const b of document.querySelectorAll("nav.tabs button")) b.addEventListener("click", () => showTab(b.dataset.tab));
+const fleetVisible = () => !document.querySelector('[data-panel="fleet"]').classList.contains("hidden");
 
 sync.onChange(s => {
   const on = $("st-online");
@@ -82,7 +98,7 @@ $("sync-now").addEventListener("click", syncNow);
 window.addEventListener("online", syncNow);
 setInterval(syncNow, 60000);
 
-// ---------------- Build ----------------
+// ============================== Build ==============================
 
 async function renderApps() {
   ui.apps = await catalogue.apps();
@@ -114,10 +130,16 @@ async function renderVersion() {
   const app = $("app").value, version = $("version").value;
   const v = ui.apps.find(a => a.app === app)?.versions.find(x => x.version === version);
   $("config-card").classList.toggle("hidden", !v);
-  if (!v) { $("version-info").textContent = "No configurable versions."; return; }
+  if (!v) { $("version-info").textContent = "No configurable versions."; $("rf-wrap").classList.add("hidden"); return; }
   $("version-info").textContent = `${kb(v.size)} · built ${v.built.replace("T", " ")} · ESP-IDF ${v.idf}`;
   const keep = (await store.getMeta("keepOffline")) ?? [];
   $("keep-offline").checked = keep.includes(`${app}\n${version}`);
+  const key = `${app}\n${version}`;
+  if (key === ui.loadedVersion) {
+    // background refresh (sync etc.): keep the radio stack choice and the editor as they are
+    await renderConfigs();
+    return;
+  }
   try {
     ui.methods = await catalogue.json(app, version, "methods.json");
     ui.defaultScript = await catalogue.json(app, version, "default.config.json");
@@ -126,18 +148,18 @@ async function renderVersion() {
     $("config-card").classList.add("hidden");
     return;
   }
-  $("methods-ref").replaceChildren(...scriptableMethods(ui.methods).map(m => h("li", {},
-    h("code", {}, m.name), m.per_device ? " (per-device: not in shared configs)" : "", ` – ${m.description ?? ""}`,
-    m.params?.properties ? h("div", { class: "muted" }, h("code", {}, describeParams(m.params))) : null)));
-  await renderConfigs();
-}
+  // radio stack versions this firmware declares (older versions declare none)
+  const rf = ui.methods.rf_stacks;
+  $("rf-wrap").classList.toggle("hidden", !rf);
+  $("rf-stack").replaceChildren(...(rf?.versions ?? []).map(x => h("option", { value: x }, x)));
+  if (rf) $("rf-stack").value = rf.default ?? rf.versions[0];
 
-function describeParams(schema, prefix = "") {
-  return Object.entries(schema.properties ?? {}).map(([k, s]) => {
-    if (s.type === "object") return describeParams(s, `${prefix}${k}.`);
-    const range = s.enum ? s.enum.join("|") : "minimum" in s ? `${s.minimum}–${s.maximum}` : s.type;
-    return `${prefix}${k}: ${range}`;
-  }).join(", ");
+  $("methods-ref").replaceChildren(...scriptableMethods(ui.methods).map(m => h("li", {},
+    h("code", {}, m.name), m.per_device ? " (per-device: not in shared configs)" : "", ` – ${m.description ?? ""}`)));
+  $("add-method").replaceChildren(...B.callableMethods(ui.methods).map(m => h("option", { value: m.name }, m.name)));
+  ui.loadedVersion = key;
+  ui.loadedConfig = null;
+  await renderConfigs();
 }
 
 async function renderConfigs(selectId) {
@@ -151,7 +173,7 @@ async function renderConfigs(selectId) {
   sel.replaceChildren(h("option", { value: DEFAULT }, "default (ships with this version)"),
     ...ui.configs.map(c => h("option", { value: c.id }, `${c.name}${c._rejected ? " ⚠ refused by server" : ""}`)));
   sel.value = [DEFAULT, ...ui.configs.map(c => c.id)].includes(prev) ? prev : DEFAULT;
-  loadConfigIntoEditor();
+  if (sel.value !== ui.loadedConfig) loadConfig(); // else keep the editor, including unsaved edits
 }
 
 function selectedConfig() {
@@ -160,37 +182,136 @@ function selectedConfig() {
   return ui.configs.find(c => c.id === id);
 }
 
-function loadConfigIntoEditor() {
+function loadConfig() {
   const c = selectedConfig();
-  $("editor").value = JSON.stringify(c.script, null, 2);
+  ui.loadedConfig = $("config").value;
+  ui.script = { calls: structuredClone(c.script.calls) };
   ui.dirty = false;
+  ui.jsonError = null;
   $("archive-config").classList.toggle("hidden", c.id === null);
-  validateEditor();
+  $("editor").value = pretty(ui.script);
+  renderBuilder();
+  validate();
 }
 
-/** Parse + validate the editor. Returns the script if valid, else null. */
-function validateEditor() {
-  const out = $("validation");
-  let script, errors;
-  try {
-    script = JSON.parse($("editor").value);
-    errors = validateScript(script, ui.methods, true);
-  } catch (e) {
-    errors = [`not valid JSON: ${e.message}`];
-  }
+/** Apply a builder edit: update the script, the JSON view and the validation; re-render the form if structure changed. */
+function edit(next, structural = false) {
+  ui.script = next;
+  ui.dirty = true;
+  $("editor").value = pretty(next);
+  if (structural) renderBuilder();
+  validate();
+}
+
+function validate() {
+  const errors = ui.jsonError ? [`not valid JSON: ${ui.jsonError}`] : validateScript(ui.script, ui.methods, true);
   $("editor").classList.toggle("invalid", errors.length > 0);
-  out.replaceChildren(errors.length
+  const n = Array.isArray(ui.script?.calls) ? ui.script.calls.length : 0;
+  $("validation").replaceChildren(errors.length
     ? h("ul", { class: "errors" }, errors.map(e => h("li", {}, e)))
-    : h("div", { class: "valid" }, `✓ valid · ${script.calls.length} call${script.calls.length === 1 ? "" : "s"}${ui.dirty ? " · unsaved changes" : ""}`));
+    : h("div", { class: "valid" }, `✓ valid · ${n} call${n === 1 ? "" : "s"}${ui.dirty ? " · unsaved changes" : ""}`));
   $("save-config").disabled = errors.length > 0;
   $("save-profile").disabled = errors.length > 0;
-  return errors.length ? null : script;
+  return errors.length === 0;
 }
+
+// ---- Form | JSON ----
+
+function setMode(mode) {
+  if (mode === "form" && ui.jsonError) { alert("Fix the JSON first; the form needs a valid script to show."); return; }
+  ui.mode = mode;
+  $("mode-form").classList.toggle("active", mode === "form");
+  $("mode-json").classList.toggle("active", mode === "json");
+  for (const id of ["builder", "builder-add"]) $(id).classList.toggle("hidden", mode !== "form");
+  $("editor").classList.toggle("hidden", mode !== "json");
+  if (mode === "form") renderBuilder();
+}
+$("mode-form").addEventListener("click", () => setMode("form"));
+$("mode-json").addEventListener("click", () => setMode("json"));
+
+$("editor").addEventListener("input", () => {
+  ui.dirty = true;
+  try {
+    const parsed = JSON.parse($("editor").value);
+    ui.jsonError = null;
+    ui.script = parsed ?? {}; // the validator reports anything that isn't a script
+  } catch (e) {
+    ui.jsonError = e.message;
+  }
+  validate();
+});
+
+// ---- the form ----
+
+function renderBuilder() {
+  if (ui.mode !== "form" || !ui.methods) return;
+  const calls = Array.isArray(ui.script?.calls) ? ui.script.calls : [];
+  const callable = B.callableMethods(ui.methods);
+  $("builder").replaceChildren(...calls.map((call, i) => {
+    const known = callable.some(m => m.name === call.method);
+    const head = h("div", { class: "call-head" },
+      h("span", { class: "n" }, `${i + 1}.`),
+      h("select", { onchange: e => edit(B.replaceCall(ui.script, i, B.newCall(ui.methods, e.target.value)), true) },
+        known ? null : h("option", { value: call.method, selected: true, disabled: true }, `${call.method} (not allowed)`),
+        callable.map(m => h("option", { value: m.name, selected: m.name === call.method }, m.name))),
+      h("button", { class: "secondary icon", title: "move up", disabled: i === 0, onclick: () => edit(B.moveCall(ui.script, i, -1), true) }, "↑"),
+      h("button", { class: "secondary icon", title: "move down", disabled: i === calls.length - 1, onclick: () => edit(B.moveCall(ui.script, i, 1), true) }, "↓"),
+      h("button", { class: "danger icon", title: "remove", onclick: () => edit(B.removeCall(ui.script, i), true) }, "✕"));
+    const m = ui.methods.methods[call.method];
+    let body;
+    if (!B.representable(call, ui.methods)) body = h("div", { class: "muted fld" }, "This call has something the form can't show; edit it in JSON.");
+    else if (m?.params) body = renderFields(B.fieldsFor(m.params, call.params ?? {}), i);
+    else body = h("div", { class: "muted fld" }, m?.description ?? "No settings.");
+    return h("div", { class: "call" }, head, m?.description && m.params ? h("div", { class: "muted" }, m.description) : null, body);
+  }), calls.length ? "" : h("div", { class: "muted", style: "margin-top:10px" }, "No calls yet: add one below."));
+}
+
+function renderFields(fields, i, parentIncluded = true) {
+  return fields.map(f => {
+    const on = f.required || f.included;
+    const toggle = f.required ? null : h("input", {
+      type: "checkbox", checked: f.included, title: "include this setting",
+      onchange: e => edit(e.target.checked ? B.setParam(ui.script, i, f.path, f.value) : B.unsetParam(ui.script, i, f.path), true),
+    });
+    const set = (v) => edit(B.setParam(ui.script, i, f.path, v));
+    if (f.kind === "object") {
+      return h("div", { class: `fld${on && parentIncluded ? "" : " off"}` },
+        h("div", { class: "fld-head" }, toggle, h("label", {}, f.label), h("span", { class: "muted" }, f.description)),
+        h("fieldset", {}, renderFields(f.children, i, on && parentIncluded)));
+    }
+    let ctl;
+    const num = v => (f.schema.type === "integer" ? Math.round(Number(v)) : Number(v));
+    if (f.kind === "range") {
+      const range = h("input", { type: "range", min: f.schema.minimum, max: f.schema.maximum, step: B.stepFor(f.schema), value: f.value });
+      const box = h("input", { type: "number", min: f.schema.minimum, max: f.schema.maximum, step: f.schema.type === "integer" ? 1 : "any", value: f.value });
+      range.addEventListener("input", () => { box.value = range.value; set(num(range.value)); });
+      box.addEventListener("input", () => { if (box.value !== "") { range.value = box.value; set(num(box.value)); } });
+      ctl = [range, box];
+    } else if (f.kind === "number") {
+      ctl = h("input", { type: "number", value: f.value, oninput: e => e.target.value !== "" && set(num(e.target.value)) });
+    } else if (f.kind === "enum") {
+      ctl = h("select", { onchange: e => set(e.target.value) }, f.schema.enum.map(x => h("option", { value: x, selected: x === f.value }, x)));
+    } else if (f.kind === "bool") {
+      ctl = h("input", { type: "checkbox", checked: f.value, onchange: e => set(e.target.checked) });
+    } else {
+      ctl = h("input", { type: "text", value: f.value ?? "", oninput: e => set(e.target.value) });
+    }
+    const unit = f.key.endsWith("_ms") ? "ms" : f.key.endsWith("_hz") ? "Hz" : f.key === "seconds" ? "s" : "";
+    return h("div", { class: `fld${on && parentIncluded ? "" : " off"}` },
+      h("div", { class: "fld-head" }, toggle, h("label", { title: f.description }, f.label),
+        f.kind === "range" ? h("span", { class: "muted" }, `${f.schema.minimum}–${f.schema.maximum}${unit ? " " + unit : ""}`) : null),
+      h("div", { class: "fld-ctl" }, ctl, unit && f.kind !== "range" ? h("span", { class: "muted" }, unit) : null));
+  });
+}
+
+$("add-call").addEventListener("click", () => {
+  const base = Array.isArray(ui.script?.calls) ? ui.script : { calls: [] };
+  edit(B.addCall(base, B.newCall(ui.methods, $("add-method").value)), true);
+});
 
 $("app").addEventListener("change", renderVersions);
 $("version").addEventListener("change", renderVersion);
-$("config").addEventListener("change", loadConfigIntoEditor);
-$("editor").addEventListener("input", () => { ui.dirty = true; validateEditor(); });
+$("config").addEventListener("change", loadConfig);
 
 $("keep-offline").addEventListener("change", async e => {
   const key = `${$("app").value}\n${$("version").value}`;
@@ -204,12 +325,11 @@ $("keep-offline").addEventListener("change", async e => {
 });
 
 async function saveConfig() {
-  const script = validateEditor();
-  if (!script) return null;
+  if (!validate()) return null;
   const name = prompt("Name for this config:", ui.dirty ? "" : `${selectedConfig().name}-copy`)?.trim();
   if (!name) return null;
   const rec = await addRecord(store, "configs", {
-    id: crypto.randomUUID(), app: $("app").value, version: $("version").value, name, script: { calls: script.calls },
+    id: crypto.randomUUID(), app: $("app").value, version: $("version").value, name, script: { calls: ui.script.calls },
     created_at: new Date().toISOString(), client: CLIENT,
   });
   await renderConfigs(rec.id);
@@ -227,17 +347,19 @@ $("save-profile").addEventListener("click", async () => {
     if (!cfg) return;
   }
   const version = $("version").value;
-  const name = prompt("Name for this profile:", `${cfg.name} @ ${version}`)?.trim();
+  const rf = ui.methods.rf_stacks ? $("rf-stack").value : null;
+  const name = prompt("Name for this profile:", `${cfg.name} @ ${version}${rf ? ` · RF ${rf}` : ""}`)?.trim();
   if (!name) return;
-  await addRecord(store, "profiles", {
+  const p = await addRecord(store, "profiles", {
     id: crypto.randomUUID(), name, app: $("app").value, version, config_id: cfg.id, config_name: cfg.name,
-    script: { calls: cfg.script.calls }, created_at: new Date().toISOString(), client: CLIENT,
+    script: { calls: cfg.script.calls }, rf_stack: rf, created_at: new Date().toISOString(), client: CLIENT,
   });
   catalogue.keepOffline($("app").value, version).catch(() => {});
+  await store.setMeta("deployProfile", p.id);
   sync.refreshPending();
   await renderProfiles();
   syncNow();
-  document.querySelector('nav.tabs button[data-tab="deploy"]').click();
+  showTab("deploy");
 });
 
 $("archive-config").addEventListener("click", async () => {
@@ -248,26 +370,61 @@ $("archive-config").addEventListener("click", async () => {
   syncNow();
 });
 
-// ---------------- Deploy ----------------
+// ============================== Deploy ==============================
+
+// Renders can overlap (a save and a background sync both re-render). Each render does its
+// async reads first and only touches the DOM if no newer render has started since.
+let profilesGen = 0;
 
 async function renderProfiles() {
+  const gen = ++profilesGen;
   const archived = await archivedIds(store, "profile");
   const profiles = (await store.all("profiles")).filter(p => !archived.has(p.id))
-    .sort((a, b) => b.created_at.localeCompare(a.created_at));
-  if (!profiles.length) { $("profiles").replaceChildren("No profiles yet. Make one in Build."); return; }
-  const cards = [];
-  for (const p of profiles) {
-    const offline = await catalogue.isOffline(p.app, p.version);
-    cards.push(h("div", { class: "profile" },
-      h("div", {}, h("span", { class: "name" }, p.name),
-        offline ? h("span", { class: "badge ok" }, "offline ✓") : h("span", { class: "badge warn" }, "needs network"),
-        p._rejected ? h("span", { class: "badge bad" }, "refused by server") : null),
-      h("div", { class: "actions" },
-        h("button", { onclick: () => runDeploy(p), disabled: !navigator.bluetooth }, "Deploy"),
-        h("button", { class: "small danger", title: "archive", onclick: () => archiveProfile(p) }, "✕")),
-      h("div", { class: "muted" }, `${p.app} ${p.version} · config "${p.config_name}" · ${p.script.calls.length} call(s)`)));
-  }
-  $("profiles").replaceChildren(...cards);
+    .sort((a, b) => a.name.localeCompare(b.name));
+  const sel = $("profile-select");
+  const want = (await store.getMeta("deployProfile")) ?? sel.value;
+  if (gen !== profilesGen) return;
+  ui.profiles = profiles;
+  sel.replaceChildren(...(ui.profiles.length
+    ? ui.profiles.map(p => h("option", { value: p.id }, p.name))
+    : [h("option", { value: "" }, "no profiles yet: make one in Build")]));
+  if (ui.profiles.some(p => p.id === want)) sel.value = want;
+  await renderProfileDetail();
+}
+
+async function renderProfileDetail() {
+  const gen = ++profilesGen;
+  const p = ui.profiles.find(x => x.id === $("profile-select").value);
+  $("deploy-btn").disabled = !p || !navigator.bluetooth;
+  if (!p) { $("profile-detail").replaceChildren(); renderTarget(); return; }
+  const offline = await catalogue.isOffline(p.app, p.version);
+  if (gen !== profilesGen) return; // a newer render (or another selection) owns the card now
+  $("profile-detail").replaceChildren(h("div", { class: "detail" },
+    h("div", {}, h("b", {}, p.name),
+      offline ? h("span", { class: "badge ok" }, "offline ✓") : h("span", { class: "badge warn" }, "needs network"),
+      p._rejected ? h("span", { class: "badge bad" }, "refused by server") : null),
+    h("dl", { class: "kv", style: "margin-top:8px" },
+      h("dt", {}, "firmware"), h("dd", {}, `${p.app} ${p.version}`),
+      h("dt", {}, "radio stack"), h("dd", {}, p.rf_stack ?? "–"),
+      h("dt", {}, "config"), h("dd", {}, p.config_name),
+      h("dt", {}, "created"), h("dd", {}, new Date(p.created_at).toLocaleString())),
+    h("div", { class: "muted", style: "margin-top:8px" }, "Calls, run in order:"),
+    h("ol", {}, p.script.calls.map(c => h("li", {}, h("code", {}, c.method), " ", h("span", { class: "muted mono" }, compact(c.params))))),
+    h("div", { class: "row" }, h("button", { class: "danger small", onclick: () => archiveProfile(p) }, "Archive profile"))));
+  renderTarget();
+}
+$("profile-select").addEventListener("change", async () => {
+  await store.setMeta("deployProfile", $("profile-select").value);
+  renderProfileDetail();
+});
+
+function renderTarget() {
+  const t = ui.target;
+  $("target-line").replaceChildren(t
+    ? h("span", {}, "Target: ", h("b", {}, t.name), t.device_id ? h("span", { class: "muted mono" }, ` · ${t.device_id}`) : null,
+        h("span", { class: "muted" }, " (only this node will be offered)"))
+    : h("span", { class: "muted" }, "Target: any hs-* node; you'll pick it in the Bluetooth chooser."),
+    t ? h("button", { class: "secondary icon", title: "clear target", onclick: () => { ui.target = null; renderTarget(); } }, "✕") : null);
 }
 
 async function archiveProfile(p) {
@@ -283,16 +440,19 @@ function runLog(msg) {
 }
 
 let deploying = false;
-async function runDeploy(profile) {
-  if (deploying) return;
+$("deploy-btn").addEventListener("click", async () => {
+  const profile = ui.profiles.find(x => x.id === $("profile-select").value);
+  if (deploying || !profile) return;
   let node;
   try {
-    node = await Node.choose(); // first: needs the tap's user activation
+    // first: needs the tap's user activation. A fleet target narrows the chooser to that node.
+    node = await Node.choose(ui.target ? [{ name: ui.target.name }] : undefined);
   } catch (e) {
     if (e.name !== "NotFoundError") alert(`Couldn't connect: ${e.message}`);
     return;
   }
   deploying = true;
+  $("deploy-btn").disabled = true;
   const boardRaw = $("board-id").value.trim();
   const boardId = boardRaw === "" ? null : Number(boardRaw);
   $("run-card").classList.remove("hidden");
@@ -324,14 +484,18 @@ async function runDeploy(profile) {
       ? `✓ ${node.device.name} (device ${rec.device_id}) now runs "${profile.name}"${rec.flashed ? `, flashed ${rec.from_version} → ${rec.version}` : ""}`
       : `✗ ${rec.error}`;
     if (!rec.device_id) r.textContent += " (not recorded: no device ID)";
+    if (ui.target?.device_id && rec.device_id && rec.device_id !== ui.target.device_id) {
+      r.textContent += ` ⚠ this was device ${rec.device_id}, not the targeted ${ui.target.device_id}`;
+    }
   } finally {
     lock?.release();
     node.disconnect();
     deploying = false;
+    $("deploy-btn").disabled = false;
     sync.refreshPending();
     syncNow();
   }
-}
+});
 
 $("inspect").addEventListener("click", async () => {
   let node;
@@ -343,7 +507,7 @@ $("inspect").addEventListener("click", async () => {
       const status = await node.rpc.call("device.status");
       const config = await node.rpc.call("config.get");
       const last = (await fleet(store)).find(f => f.device_id === info.device_id);
-      out.push(["device ID", info.device_id], ["firmware", `${info.app} ${info.version}`],
+      out.push(["device ID", info.device_id], ["BLE address", info.ble_address ?? "–"], ["firmware", `${info.app} ${info.version}`],
         ["partition", `${info.partition} (${info.state})`], ["board ID", info.board_id],
         ["uptime", `${status.uptime_s} s`], ["temperature", `${status.temp_c} °C`],
         ["settings", JSON.stringify(config)],
@@ -361,40 +525,106 @@ $("inspect").addEventListener("click", async () => {
   $("inspect-out").replaceChildren(...out.flatMap(([k, v]) => [h("dt", {}, k), h("dd", {}, v)]));
 });
 
-// ---------------- Fleet ----------------
+// ============================== Fleet ==============================
+
+async function refreshMetrics() {
+  try {
+    const r = await fetch("api/fleet/metrics?hours=24");
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    ui.metrics = { at: new Date().toISOString(), rows: await r.json() };
+    await store.setMeta("metrics", ui.metrics);
+  } catch { /* offline: keep the cached copy */ }
+  if (fleetVisible()) renderFleet();
+}
+setInterval(() => fleetVisible() && refreshMetrics(), 30000);
+
+function targetDevice(name, device_id = null, ble_address = null) {
+  ui.target = { name, device_id, ble_address };
+  showTab("deploy");
+  renderTarget();
+}
+
+function metricsLine(m, extra = []) {
+  if (!m) return h("span", {}, "not heard by the scanner in 24 h", ...extra);
+  const cap = m.capture_pct == null ? "–" : `${m.capture_pct}%`;
+  return h("span", {}, `seen ${ago(m.last_seen)} · ${m.rssi_last ?? "–"} dBm · capture ${cap} · missed ${m.missed}`, ...extra);
+}
+
+let fleetGen = 0;
 
 async function renderFleet() {
-  const rows = await fleet(store);
-  $("fleet-history").replaceChildren();
-  if (!rows.length) {
-    $("fleet-rows").replaceChildren(h("tr", {}, h("td", { colspan: 5, class: "muted" }, "No deployments recorded yet.")));
-    return;
+  const gen = ++fleetGen;
+  const view = buildFleetView(await fleet(store), ui.metrics?.rows ?? [], await store.all("profiles"));
+  if (gen !== fleetGen) return;
+  $("metrics-age").textContent = ui.metrics
+    ? (sync.state.online === false ? `network metrics as of ${new Date(ui.metrics.at).toLocaleTimeString()}` : `metrics ${ago(ui.metrics.at)}`)
+    : "no network metrics yet";
+  if (!view.groups.length) {
+    $("fleet-groups").replaceChildren(h("div", { class: "muted", style: "margin-top:12px" }, "No deployments recorded yet."));
+  } else {
+    $("fleet-groups").replaceChildren(...view.groups.map(g => h("div", { class: "group" },
+      h("div", { class: "group-head" }, h("h3", {}, g.name),
+        h("span", { class: "muted" }, `${g.app} ${g.version}`),
+        g.rf_stack ? h("span", { class: "badge accent" }, `RF ${g.rf_stack}`) : null,
+        g.config_name ? h("span", { class: "badge" }, `config ${g.config_name}`) : null,
+        h("span", { class: "muted" }, `· ${g.devices.length} device${g.devices.length === 1 ? "" : "s"}`)),
+      g.devices.map(d => deviceRow(d)))));
   }
-  $("fleet-rows").replaceChildren(...rows.map(f => h("tr", { class: "device", onclick: () => showHistory(f) },
-    h("td", { class: "mono" }, f.device_id),
-    h("td", {}, f.latest.board_id ?? "–"),
-    h("td", {}, f.latest.profile_name ?? "–", h("div", { class: "muted" }, f.latest.version)),
-    h("td", {}, f.latest.ok ? h("span", { class: "badge ok" }, "ok") : h("span", { class: "badge bad" }, "failed")),
-    h("td", {}, ago(f.latest.finished_at)))));
+  $("unprovisioned").replaceChildren(...(view.unprovisioned.length ? [h("div", { class: "group" },
+    h("div", { class: "group-head" }, h("h3", {}, "Seen by the scanner, not in the fleet"),
+      h("span", { class: "muted" }, "no deployment recorded yet")),
+    view.unprovisioned.map(m => h("div", { class: "dev" },
+      h("div", { class: "dev-row", style: "cursor:default" },
+        h("span", { class: `dot ${seenState(m.last_seen)}` }),
+        h("span", {}, h("b", {}, boardName(m.board_id)), h("span", { class: "muted mono" }, ` · ${m.address}`)),
+        h("button", { class: "secondary small", onclick: () => targetDevice(boardName(m.board_id), null, m.address) }, "Deploy to it"),
+        h("span", { class: "metrics" }, metricsLine(m))))))] : []));
 }
 
-function showHistory(f) {
-  $("fleet-history").replaceChildren(h("h2", { style: "margin-top:14px" }, `History of ${f.device_id}`),
-    ...f.history.map(d => h("div", { class: "profile" },
-      h("div", {}, h("span", { class: "name" }, d.profile_name ?? "–"),
-        d.ok ? h("span", { class: "badge ok" }, "ok") : h("span", { class: "badge bad" }, "failed"),
-        d.flashed ? h("span", { class: "badge" }, `flashed ${d.from_version} → ${d.version}`) : null),
-      h("div", { class: "muted" }, `${new Date(d.finished_at).toLocaleString()} · board ${d.board_id ?? "–"} · ${d.results.length} call(s)${d.error ? ` · ${d.error}` : ""}`))));
+function deviceRow(d) {
+  const open = ui.expanded.has(d.device_id);
+  const name = d.board_id != null ? boardName(d.board_id) : "hs-??";
+  const m = d.metrics;
+  const toggle = () => { open ? ui.expanded.delete(d.device_id) : ui.expanded.add(d.device_id); renderFleet(); };
+  const row = h("div", { class: "dev-row", onclick: toggle, title: open ? "collapse" : "expand" },
+    h("span", { class: `dot ${seenState(m?.last_seen)}` }),
+    h("span", {}, h("b", {}, name), h("span", { class: "muted mono" }, ` · ${d.device_id}`)),
+    h("span", {}, d.latest.ok ? h("span", { class: "badge ok" }, "ok") : h("span", { class: "badge bad" }, "last deploy failed"),
+      h("span", { class: "chev" }, " ›")),
+    h("span", { class: "metrics" }, metricsLine(m, [` · ${d.current.version}`])));
+  if (!open) return h("div", { class: "dev" }, row);
+  const kv = [
+    ["device ID", d.device_id], ["BLE address", d.ble_address], ["firmware", `${d.current.app} ${d.current.version}`],
+    ["profile", d.current.profile_name ?? "–"], ["radio stack", d.current.rf_stack ?? "–"],
+    ["last deploy", `${new Date(d.latest.finished_at).toLocaleString()} ${d.latest.ok ? "✓" : `✗ ${d.latest.error ?? ""}`}`],
+  ];
+  if (m) kv.push(["last seen", `${new Date(m.last_seen).toLocaleString()} (${ago(m.last_seen)})`],
+                 ["RSSI", `${m.rssi_last} dBm now · ${m.rssi_avg_1h ?? "–"} dBm 1 h avg`],
+                 ["capture (24 h)", `${m.capture_pct}% · ${m.readings} readings, ${m.missed} missed, ${m.resets} reboots`],
+                 ["node", `uptime ${m.uptime_s} s · ${m.temp_c} °C`]);
+  return h("div", { class: "dev open" }, row, h("div", { class: "dev-body" },
+    h("dl", { class: "kv" }, kv.flatMap(([k, v]) => [h("dt", {}, k), h("dd", {}, v)])),
+    h("div", { class: "row" },
+      h("button", { class: "small", onclick: () => targetDevice(name, d.device_id, d.ble_address) }, "Deploy to this device"),
+      h("button", { class: "secondary small", onclick: toggle }, "Collapse")),
+    h("div", { class: "muted", style: "margin-top:10px" }, `History (${d.history.length})`),
+    d.history.map(x => h("div", { class: "hist" },
+      h("div", {}, h("b", {}, x.profile_name ?? "–"),
+        x.ok ? h("span", { class: "badge ok" }, "ok") : h("span", { class: "badge bad" }, "failed"),
+        x.flashed ? h("span", { class: "badge" }, `flashed ${x.from_version} → ${x.version}`) : null,
+        x.rf_stack ? h("span", { class: "badge accent" }, `RF ${x.rf_stack}`) : null),
+      h("div", { class: "muted" }, `${new Date(x.finished_at).toLocaleString()} · board ${x.board_id ?? "–"} · ${x.results.length} call(s)${x.error ? ` · ${x.error}` : ""}`)))));
 }
 
-// ---------------- go ----------------
+// ============================== go ==============================
 
 async function refreshAll() {
   await renderApps();
   await renderProfiles();
-  if (!document.querySelector('[data-panel="fleet"]').classList.contains("hidden")) await renderFleet();
+  if (fleetVisible()) await renderFleet();
 }
 
+setMode("form");
 await sync.refreshPending();
 await refreshAll();
 syncNow();

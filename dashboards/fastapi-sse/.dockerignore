@@ -3,3 +3,4 @@ __pycache__/
 test_*.py
 test_*.mjs
 tests/
+node_modules/
