@@ -5,10 +5,10 @@
 //     (catalogue.js fills the same cache when it keeps a version offline)
 //   other /api/*: straight to the network; the app handles being offline itself
 //   push: temperature alerts from the server; tapping one opens the dashboard (/) in the app
-const SHELL = "hs-shell-v4";
+const SHELL = "hs-shell-v5";
 const CATALOGUE = "hs-catalogue";
 const SHELL_FILES = [
-  "/provision", "/manifest.webmanifest", "/static/theme.css",
+  "/admin", "/manifest.webmanifest", "/static/theme.css", "/static/livechart.js",
   "/static/app.js", "/static/ota.js", "/static/rpc.js", "/static/schema.js", "/static/store.js",
   "/static/sync.js", "/static/catalogue.js", "/static/deploy.js", "/static/builder.js", "/static/fleetview.js",
   "/static/gateway.js", "/", "/static/dashboard.js", "/static/dashview.js",

@@ -4,11 +4,13 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="theme-color" content="#1E1554">
-<title>home_state · Provision</title>
+<title>Server Temp · Admin</title>
 <link rel="manifest" href="/manifest.webmanifest">
 <link rel="icon" href="/static/icons/icon-192.png">
 <link rel="apple-touch-icon" href="/static/icons/icon-192.png">
 <link rel="stylesheet" href="/static/theme.css">
+<link rel="stylesheet" href="/static/vendor/uPlot.min.css">
+<script src="/static/vendor/uPlot.iife.min.js"></script>
 <style>
   :root { --mono: ui-monospace, "SF Mono", Menlo, monospace; }
   * { box-sizing: border-box; }
@@ -44,9 +46,6 @@
   code, .mono { font-family: var(--mono); font-size: .82rem; }
   .badge { font-size: .75rem; padding: 1px 7px; border-radius: 99px; border: 1px solid var(--line); margin-left: 4px; white-space: nowrap; }
   .badge.ok { color: var(--ok); } .badge.bad { color: var(--bad); } .badge.warn { color: var(--warn); } .badge.accent { color: var(--accent); }
-  .seg { display: inline-flex; border: 1px solid var(--line); border-radius: 9px; overflow: hidden; }
-  .seg button { background: transparent; color: var(--muted); border-radius: 0; padding: 6px 14px; }
-  .seg button.active { background: var(--accent); color: var(--on-accent); }
   /* deploy */
   .detail { border: 1px solid var(--line); border-radius: 10px; padding: 12px; margin-top: 10px; }
   .detail ol { margin: 6px 0 0; padding-left: 20px; font-size: .88rem; }
@@ -95,7 +94,7 @@
 <body>
 <header class="top">
   <div class="titlebar">
-    <h1>📡 Provision</h1>
+    <h1>⚙️ Admin</h1>
     <span>
       <button class="secondary icon" id="bell" title="Temperature alerts" aria-label="Temperature alerts">🔔</button>
       <a href="/" style="margin-left:8px">Dashboard ›</a>
@@ -108,9 +107,9 @@
     <button class="small secondary" id="sync-now">Sync</button>
   </div>
   <nav class="tabs">
-    <button data-tab="deploy" class="active">Deploy</button>
-    <button data-tab="build">Build</button>
-    <button data-tab="fleet">Fleet</button>
+    <button data-tab="fleet" class="active">Fleet</button>
+    <button data-tab="profile">Profile</button>
+    <button data-tab="deploy">Deploy</button>
     <button data-tab="gateway">Gateway</button>
   </nav>
 </header>
@@ -138,7 +137,7 @@
   </section>
 
   <!-- ===== Deploy ===== -->
-  <div data-panel="deploy">
+  <div data-panel="deploy" class="hidden">
     <section class="card">
       <h2>Deploy a profile</h2>
       <label class="field" for="profile-select">Profile</label>
@@ -166,7 +165,7 @@
   </div>
 
   <!-- ===== Build ===== -->
-  <div data-panel="build" class="hidden">
+  <div data-panel="profile" class="hidden">
     <section class="card">
       <h2>Firmware</h2>
       <label class="field" for="app">App</label>
@@ -187,6 +186,11 @@
       </div>
       <label class="field" for="config">Start from</label>
       <select id="config"></select>
+      <div class="row">
+        <button class="secondary small" id="load-file">Load from file…</button>
+        <span class="muted">a config script ({"calls": [...]}) or a whole exported profile</span>
+        <input type="file" id="file-input" accept="application/json,.json" class="hidden">
+      </div>
       <div id="builder"></div>
       <div id="builder-add" class="row">
         <select id="add-method" style="flex:1"></select>
@@ -222,7 +226,7 @@
   </div>
 
   <!-- ===== Fleet ===== -->
-  <div data-panel="fleet" class="hidden">
+  <div data-panel="fleet">
     <section class="card">
       <div class="row" style="margin-top:0;justify-content:space-between">
         <h2 style="margin:0">Fleet</h2>
@@ -231,6 +235,11 @@
       <div class="muted">Grouped by the profile each device is running. Tap a device for details and history.</div>
       <div id="fleet-groups"></div>
       <div id="unprovisioned"></div>
+    </section>
+    <section class="card">
+      <h2>Signal strength</h2>
+      <div class="muted">Received signal strength at the scanner, per board. Tap a board to show or hide it.</div>
+      <div id="rssi"></div>
     </section>
   </div>
 </main>

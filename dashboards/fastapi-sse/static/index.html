@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="theme-color" content="#1E1554">
-<title>home_state · Dashboard</title>
+<title>Server Temp</title>
 <link rel="manifest" href="/manifest.webmanifest">
 <link rel="icon" href="/static/icons/icon-192.png">
 <link rel="stylesheet" href="/static/theme.css">
@@ -20,39 +20,20 @@
   .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--bad); display: inline-block; }
   .dot.on { background: var(--ok); }
   .bar { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; justify-content: space-between; margin: 14px 0 8px; }
-  .seg { display: inline-flex; border: 1px solid var(--line); border-radius: 9px; overflow: hidden; }
-  .seg button { background: transparent; color: var(--muted); border: 0; border-radius: 0; padding: 7px 14px; font: inherit; font-weight: 600; cursor: pointer; }
-  .seg button.active { background: var(--accent); color: var(--on-accent); }
-  .chips { display: flex; flex-wrap: wrap; gap: 8px; margin: 8px 0 12px; }
-  .chip { display: inline-flex; align-items: center; gap: 8px; padding: 7px 12px; border-radius: 99px; cursor: pointer;
-          border: 1px solid var(--line); background: var(--card); color: var(--muted); font: inherit; text-align: left; }
-  .chip .sw { width: 12px; height: 12px; border-radius: 50%; border: 2px solid var(--c); background: transparent; flex: none; }
-  .chip.on { color: var(--fg); border-color: var(--c); }
-  .chip.on .sw { background: var(--c); }
-  .chip .cv { font-size: .82rem; color: var(--muted); font-variant-numeric: tabular-nums; }
-  .chip:not(.on) b { text-decoration: line-through; }
   .panel { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 12px 16px; margin-bottom: 12px; }
-  .u-title { color: var(--fg); font-size: 1rem; }
   footer { margin-top: 8px; }
 </style>
 </head>
 <body>
 <main>
   <header>
-    <h1>🌡️ home_state</h1>
+    <h1>🌡️ Server Temp</h1>
     <span class="dot" id="dot"></span><span id="conn" class="muted">connecting…</span>
-    <a href="/provision" style="margin-left:auto">📡 Provision ›</a>
+    <a href="/admin" style="margin-left:auto">⚙️ Admin ›</a>
   </header>
 
-  <div class="bar">
-    <div class="seg" id="ranges" role="group" aria-label="time range"></div>
-    <span class="muted" id="threshold-note"></span>
-  </div>
-  <div class="muted">Devices: tap to show or hide</div>
-  <div class="chips" id="chips"></div>
-
-  <div class="panel"><div id="temp-chart"></div></div>
-  <div class="panel"><div id="rssi-chart"></div></div>
+  <div class="muted" style="margin-top:12px"><span id="threshold-note"></span> · devices: tap to show or hide</div>
+  <div class="panel" id="temp"></div>
   <footer class="muted">Drag across a chart to zoom, double-click to reset · <span id="t-pushed">0</span> live readings since this page opened</footer>
 </main>
 <script type="module" src="/static/dashboard.js"></script>

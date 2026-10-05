@@ -12,7 +12,7 @@
   },
   "methods": {
     "config.set": {
-      "description": "Change settings. Only the keys given are changed; all apply immediately and persist across reboots. The 'led' settings depend on the app.",
+      "description": "Change the node's settings. Only the settings you include are changed; everything else keeps its current value. Changes apply immediately and survive reboots. The 'led' settings belong to the app.",
       "params": {
         "type": "object",
         "additionalProperties": false,
@@ -21,14 +21,14 @@
             "type": "integer",
             "minimum": 1000,
             "maximum": 600000,
-            "description": "How often the payload (counter, temperature) is refreshed",
+            "description": "How often the node takes a new reading (temperature, counter) and puts it in its advert. Shorter = fresher data on the dashboard; longer = less radio activity.",
             "default": 5000
           },
           "adv_interval_ms": {
             "type": "integer",
             "minimum": 100,
             "maximum": 10240,
-            "description": "BLE advertising interval",
+            "description": "How often the node broadcasts its advert. Shorter makes it easier for the scanner to catch every reading (and quicker to find for deploys); longer saves power.",
             "default": 1000
           },
           "led": {
@@ -58,11 +58,11 @@
       }
     },
     "config.reset": {
-      "description": "Restore all settings to their defaults.",
+      "description": "Put every setting back to this app's factory defaults.",
       "params": null
     },
     "device.identify": {
-      "description": "Blink the LED fast so you can find the board.",
+      "description": "Flash the LED rapidly for a while so you can tell which physical board this is.",
       "params": {
         "type": "object",
         "additionalProperties": false,
@@ -71,18 +71,19 @@
             "type": "number",
             "minimum": 1,
             "maximum": 300,
-            "default": 10
+            "default": 10,
+            "description": "How long to flash for."
           }
         }
       }
     },
     "device.reboot": {
-      "description": "Reboot the node. A deploy reconnects before the next call.",
+      "description": "Restart the node. The deploy waits for it to come back before running the next call.",
       "params": null,
       "reboots": true
     },
     "board.set_id": {
-      "description": "Set this node's board ID (hs-<id>). Per-device: don't put this in shared configs.",
+      "description": "Set this node's board number, which names it (hs-<id>) in adverts, readings and the fleet. Per-device, so it can't go in a shared config: use 'Set board ID on deploy' instead.",
       "params": {
         "type": "object",
         "additionalProperties": false,
@@ -94,7 +95,8 @@
             "type": "integer",
             "minimum": 0,
             "maximum": 255,
-            "default": 1
+            "default": 1,
+            "description": "Board number, 0-255; shown as hs-01, hs-02, ..."
           }
         }
       },

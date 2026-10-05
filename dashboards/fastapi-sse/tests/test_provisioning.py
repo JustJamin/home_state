@@ -135,8 +135,13 @@ def test_catalogue_rejects(client, path):
 
 def test_pages(client):
     c, _ = client
-    for p in ("/", "/provision", "/sw.js", "/manifest.webmanifest", "/static/vendor/uPlot.iife.min.js"):
+    for p in ("/", "/admin", "/sw.js", "/manifest.webmanifest", "/static/vendor/uPlot.iife.min.js", "/static/livechart.js"):
         assert c.get(p).status_code == 200, p
+    # the Admin app used to be /provision: old links forward
+    r = c.get("/provision", follow_redirects=False)
+    assert r.status_code == 308 and r.headers["location"] == "/admin"
+    m = c.get("/manifest.webmanifest").json()
+    assert m["name"] == "Server Temp" and m["start_url"] == "/", "the app is Server Temp and opens on the dashboard"
     # static files must be revalidated, or a phone can mix an old module with new ones (v1.3.1 bug)
     for p in ("/static/store.js", "/static/app.js", "/static/vendor/uPlot.iife.min.js"):
         assert c.get(p).headers["cache-control"] == "no-cache", p

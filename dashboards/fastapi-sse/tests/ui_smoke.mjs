@@ -6,12 +6,15 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { JSDOM } from "jsdom";
 import "fake-indexeddb/auto";
+const { validateScript: validateScriptFor } = await import(new URL("../static/schema.js", import.meta.url).href);
 
 const here = new URL("..", import.meta.url);
 const repo = new URL("../../", here);
 const methods = JSON.parse(readFileSync(new URL("firmware/apps/hs_advertiser/methods.json", repo)));
 const defaults = JSON.parse(readFileSync(new URL("firmware/apps/hs_advertiser/default.json", repo)));
-const BASE = "https://lenovo.test/provision";
+const sbMethods = JSON.parse(readFileSync(new URL("firmware/apps/single-blink/methods.json", repo)));
+const sbDefaults = JSON.parse(readFileSync(new URL("firmware/apps/single-blink/default.json", repo)));
+const BASE = "https://lenovo.test/admin";
 const VER = "v1.3.0-test";
 
 // ---------- page ----------
@@ -26,7 +29,8 @@ window.HTMLElement.prototype.scrollIntoView = () => {};
 const alerts = [];
 window.alert = globalThis.alert = m => alerts.push(m);
 let promptAnswers = [];
-window.prompt = globalThis.prompt = () => promptAnswers.shift() ?? null;
+const promptDefaults = [];
+window.prompt = globalThis.prompt = (msg, def) => { promptDefaults.push(def); return promptAnswers.shift() ?? null; };
 window.confirm = globalThis.confirm = () => true;
 
 // ---------- fake server ----------
@@ -55,7 +59,11 @@ const json = (v, status = 200) => new Response(JSON.stringify(v), { status, head
 globalThis.fetch = window.fetch = async (input, init = {}) => {
   const url = new URL(typeof input === "string" ? input : input.url, BASE);
   const p = url.pathname;
-  if (p === "/api/apps") return json([{ app: "hs_advertiser", versions: [{ version: VER, configurable: true, size: 680000, built: "2026-10-05T10:00:00", idf: "v6.1", sha256: "x" }] }]);
+  if (p === "/api/apps") return json([
+    { app: "hs_advertiser", versions: [{ version: VER, configurable: true, size: 680000, built: "2026-10-05T10:00:00", idf: "v6.1", sha256: "x" }] },
+    { app: "single-blink", versions: [{ version: VER, configurable: true, size: 680000, built: "2026-10-05T10:00:00", idf: "v6.1", sha256: "y" }] }]);
+  if (p === `/api/apps/single-blink/${VER}/methods.json`) return json(sbMethods);
+  if (p === `/api/apps/single-blink/${VER}/default.config.json`) return json(sbDefaults);
   if (p === `/api/apps/hs_advertiser/${VER}/methods.json`) return json(methods);
   if (p === `/api/apps/hs_advertiser/${VER}/default.config.json`) return json(defaults);
   if (p === `/api/apps/hs_advertiser/${VER}/firmware.bin`) return new Response(new Uint8Array(16));
@@ -111,14 +119,28 @@ await import(new URL("static/app.js", here).href);
 await waitFor(() => $("profile-select").options.length && $("profile-select").value === "p-fast", "initial sync of profiles");
 ok("app boots, syncs from the server, Deploy shows the synced profile");
 
+assert.equal(window.document.querySelector("h1").textContent, "⚙️ Admin");
+assert.deepEqual([...window.document.querySelectorAll("nav.tabs button")].map(b => b.textContent), ["Fleet", "Profile", "Deploy", "Gateway"]);
+assert.ok(!window.document.querySelector('[data-panel="fleet"]').classList.contains("hidden"), "opens on Fleet");
+ok("Admin: title, tab order Fleet / Profile / Deploy / Gateway, opens on Fleet");
+
 assert.ok($("unsupported").classList.contains("show"), "no Web Bluetooth -> explained, deploy disabled");
 assert.equal($("deploy-btn").disabled, true);
-assert.match($("profile-detail").textContent, /radio stack.*v1/s);
+assert.doesNotMatch($("profile-detail").textContent, /radio stack/, "details collapsed by default");
+const viewBtn = () => [...$("profile-detail").querySelectorAll("button")].find(b => /profile/.test(b.textContent));
+assert.equal(viewBtn().textContent, "View profile");
+click(viewBtn());
+await waitFor(() => /radio stack.*v1/s.test($("profile-detail").textContent), "profile expanded");
 assert.match($("profile-detail").textContent, /config\.set/);
-ok("Deploy: profile dropdown with a single detail card (firmware, radio stack, calls)");
+assert.ok([...$("profile-detail").querySelectorAll("button")].some(b => b.textContent === "Export JSON"));
+click(viewBtn());
+await waitFor(() => !/radio stack/.test($("profile-detail").textContent), "profile collapsed again");
+click(viewBtn());
+await waitFor(() => /radio stack/.test($("profile-detail").textContent), "expanded for later checks");
+ok("Deploy: profile dropdown; 'View profile' expands the details (firmware, radio stack, calls, export) and hides them");
 
 // ---------- Build with the form ----------
-tab("build");
+tab("profile");
 await waitFor(() => $("builder").querySelector(".call"), "builder render");
 assert.deepEqual([...$("rf-stack").options].map(o => o.value), ["v1", "v2"]);
 assert.equal($("rf-stack").value, "v1", "preset to the firmware's default stack");
@@ -147,6 +169,14 @@ await waitFor(() => editorScript().calls[0].method === "device.identify", "reord
 assert.deepEqual(editorScript().calls.map(c => c.method), ["device.identify", "config.set"]);
 assert.match($("validation").textContent, /✓ valid · 2 calls · unsaved changes/);
 ok("Form: add call and move it up; live validation stays green");
+
+// methods guide is descriptive
+const ref = $("methods-ref").textContent;
+assert.match(ref, /A config is a list of these calls, run in order on the node/);
+assert.match(ref, /update_interval_ms \(whole number 1000–600000 ms, default 5000 ms\)/);
+assert.match(ref, /How often the node takes a new reading/);
+assert.match(ref, /device\.reboot.*reboots the node.*Takes no parameters/s);
+ok("Methods guide: what each call does, every setting's type, range, unit, default and meaning");
 
 // ---------- JSON fallback ----------
 click($("mode-json"));
@@ -186,7 +216,48 @@ await waitFor(() => /beacon RF2.*radio stack\s*v2/s.test($("profile-detail").tex
 await waitFor(() => pushed.some(b => b.profiles?.some(p => p.name === "beacon RF2" && p.rf_stack === "v2")), "profile pushed with rf_stack");
 const sentProfile = pushed.flatMap(b => b.profiles).find(p => p.name === "beacon RF2");
 assert.deepEqual(sentProfile.script, good, "profile carries the built script");
-ok("Save config as + Save as profile: radio stack v2 stored and synced, Deploy switches to it");
+assert.match(promptDefaults.at(-1), /^heartbeat-4hz @ hs_advertiser v1\.3\.0-test · RF v2$/, "suggested profile name includes the firmware app");
+ok("Save config as + Save as profile: radio stack v2 stored and synced, Deploy switches to it; name suggests app + version");
+
+// ---------- files: load a config script; import a whole profile ----------
+const loadFile = async (name, obj) => {
+  const input = $("file-input");
+  Object.defineProperty(input, "files", { value: [new window.File([JSON.stringify(obj)], name, { type: "application/json" })], configurable: true });
+  fire(input, "change");
+  await sleep(150);
+};
+tab("profile");
+await waitFor(() => $("builder").querySelector(".call"), "builder visible");
+await loadFile("cfg.json", { app: "hs_advertiser", version: VER, calls: [{ method: "config.set", params: { led: { blink_hz: 7 } } }, { method: "device.reboot" }] });
+await waitFor(() => editorScript().calls.length === 2 && editorScript().calls[0].params.led.blink_hz === 7, "config file loaded into the editor");
+assert.match($("validation").textContent, /✓ valid · 2 calls · unsaved changes/);
+assert.equal($("builder").querySelectorAll(".call").length, 2, "form shows the loaded calls");
+const before2 = alerts.length;
+await loadFile("profile.json", { kind: "profile", name: "from-file", app: "hs_advertiser", version: VER, rf_stack: "v2",
+                                 config_name: "filecfg", script: { calls: [{ method: "config.reset" }] } });
+await waitFor(() => [...$("profile-select").options].some(o => o.textContent === "from-file"), "imported profile listed");
+assert.ok(alerts.slice(before2).some(a => /Imported profile "from-file"/.test(a)));
+await waitFor(() => pushed.some(b => b.profiles?.some(p => p.name === "from-file" && p.rf_stack === "v2")), "imported profile synced");
+await loadFile("bad.json", { kind: "profile", name: "bad", app: "hs_advertiser", version: VER, script: { calls: [{ method: "config.set", params: { colour: "red" } }] } });
+assert.ok(alerts.some(a => /isn't valid for hs_advertiser.*colour: unknown setting/s.test(a)), "invalid profile file refused");
+await loadFile("junk.json", { hello: 1 });
+assert.ok(alerts.some(a => /isn't a config .* or a profile file/.test(a)));
+ok("Files: config script loads into the editor; whole profile imported + synced; invalid and unknown files refused");
+
+// ---------- single-blink: an on/off setting has one switch, not an extra include tick ----------
+tab("profile");
+$("app").value = "single-blink"; fire($("app"), "change");
+await waitFor(() => [...$("builder").querySelectorAll(".fld-head label")].some(l => l.textContent === "on ms"), "single-blink form");
+const enabledFld = [...$("builder").querySelectorAll(".fld")].find(f => f.querySelector(".fld-head label")?.textContent === "enabled");
+assert.equal(enabledFld.querySelectorAll('input[type=checkbox]').length, 1, "only the on/off switch itself");
+assert.ok(!enabledFld.classList.contains("off"));
+const sw = enabledFld.querySelector('input[type=checkbox]');
+sw.checked = false; fire(sw, "change");
+assert.equal(editorScript().calls[0].params.led.enabled, false, "switch off -> enabled: false is sent");
+const onMs = [...$("builder").querySelectorAll(".fld")].find(f => f.querySelector(".fld-head label")?.textContent === "on ms");
+assert.equal(onMs.querySelectorAll('.fld-head input[type=checkbox]').length, 1, "non-boolean optional settings keep their include tick");
+assert.deepEqual(validateScriptFor(editorScript(), sbMethods), [], "valid for single-blink");
+ok("single-blink form: 'enabled' is one switch (no extra checkbox); other optional settings keep the include tick");
 
 // ---------- Fleet ----------
 tab("fleet");

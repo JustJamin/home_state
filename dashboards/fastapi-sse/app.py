@@ -19,7 +19,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from fastapi import FastAPI, Header, Query, Request
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from psycopg.rows import dict_row
@@ -213,9 +213,15 @@ async def index() -> FileResponse:
     return FileResponse(STATIC / "index.html", headers={"Cache-Control": "no-cache"})
 
 
-@app.get("/provision")
-async def provision() -> FileResponse:
+@app.get("/admin")
+async def admin() -> FileResponse:
     return FileResponse(STATIC / "provision.html", headers={"Cache-Control": "no-cache"})
+
+
+@app.get("/provision")
+async def provision_moved() -> RedirectResponse:
+    """The Admin app used to be called Provision: keep old links and bookmarks working."""
+    return RedirectResponse("/admin", status_code=308)
 
 
 # PWA: the service worker must be served from / so its scope covers the whole app

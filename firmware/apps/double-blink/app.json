@@ -1,6 +1,6 @@
 {
   "app": "double-blink",
-  "description": "Two quick flashes, then a longer pause. Settings: flash, gap and pause lengths.",
+  "description": "Two quick flashes then a pause, repeated. Shape it with the flash, gap and pause lengths.",
   "led": {
     "type": "object",
     "additionalProperties": false,
@@ -31,7 +31,8 @@
         "default": 1000,
         "description": "Dark time after the pair"
       }
-    }
+    },
+    "description": "The LED pattern that identifies this app."
   },
   "default": {
     "description": "Factory settings: readings every 5 s, advert every 1 s, double flash then a 1 s pause.",

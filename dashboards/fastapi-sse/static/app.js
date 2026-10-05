@@ -12,6 +12,7 @@ import { Node } from "./ota.js";
 import { deploy } from "./deploy.js";
 import * as B from "./builder.js";
 import { buildFleetView, seenState } from "./fleetview.js";
+import { mount as mountChart } from "./livechart.js";
 import * as GW from "./gateway.js";
 
 const $ = id => document.getElementById(id);
@@ -60,7 +61,7 @@ const sync = new Sync(store);
 const catalogue = new Catalogue(store);
 const ui = {
   apps: [], methods: null, defaultScript: null, configs: [], script: { calls: [] }, dirty: false,
-  mode: "form", jsonError: null, target: null, profiles: [], metrics: (await store.getMeta("metrics")) ?? null,
+  mode: "form", jsonError: null, target: null, profiles: [], profileOpen: false, rssi: null, metrics: (await store.getMeta("metrics")) ?? null,
   loadedVersion: null, loadedConfig: null, // what the Build editor currently shows (kept across background refreshes)
   expanded: new Set(),
 };
@@ -72,7 +73,7 @@ if (!navigator.bluetooth) {
   const el = $("unsupported");
   el.textContent = window.isSecureContext
     ? "This browser has no Web Bluetooth: use Chrome on Android. You can still browse and build profiles."
-    : "Web Bluetooth needs HTTPS: open https://lenovo.tailc2dfa5.ts.net/provision";
+    : "Web Bluetooth needs HTTPS: open https://lenovo.tailc2dfa5.ts.net/admin";
   el.classList.add("show");
 }
 
@@ -82,7 +83,7 @@ function showTab(name) {
   if (name === "gateway") renderGateway();
   for (const x of document.querySelectorAll("nav.tabs button")) x.classList.toggle("active", x.dataset.tab === name);
   for (const p of document.querySelectorAll("[data-panel]")) p.classList.toggle("hidden", p.dataset.panel !== name);
-  if (name === "fleet") { renderFleet(); refreshMetrics(); }
+  if (name === "fleet") { renderFleet(); refreshMetrics(); showRssi(); }
   window.scrollTo({ top: 0 });
 }
 for (const b of document.querySelectorAll("nav.tabs button")) b.addEventListener("click", () => showTab(b.dataset.tab));
@@ -174,12 +175,38 @@ async function renderVersion() {
   $("rf-stack").replaceChildren(...(rf?.versions ?? []).map(x => h("option", { value: x }, x)));
   if (rf) $("rf-stack").value = rf.default ?? rf.versions[0];
 
-  $("methods-ref").replaceChildren(...scriptableMethods(ui.methods).map(m => h("li", {},
-    h("code", {}, m.name), m.per_device ? " (per-device: not in shared configs)" : "", ` – ${m.description ?? ""}`)));
+  renderMethodsRef();
   $("add-method").replaceChildren(...B.callableMethods(ui.methods).map(m => h("option", { value: m.name }, m.name)));
   ui.loadedVersion = key;
   ui.loadedConfig = null;
   await renderConfigs();
+}
+
+/** "Methods in this version": what each call does and every setting it takes. */
+function renderMethodsRef() {
+  const unitOf = k => (k.endsWith("_ms") ? " ms" : k.endsWith("_hz") ? " Hz" : k === "seconds" || k.endsWith("_s") ? " s" : "");
+  const rows = (schema, prefix = "") => Object.entries(schema.properties ?? {}).flatMap(([k, s]) => {
+    if (s.type === "object") {
+      return [h("li", {}, h("code", {}, prefix + k), " – ", s.description ?? "group of settings:", h("ul", {}, rows(s, `${prefix}${k}.`)))];
+    }
+    const u = unitOf(k);
+    const what = s.enum ? `one of ${s.enum.join(", ")}` :
+      s.type === "boolean" ? "true or false" :
+      "minimum" in s ? `${s.type === "integer" ? "whole number" : "number"} ${s.minimum}–${s.maximum}${u}` : s.type;
+    return [h("li", {}, h("code", {}, prefix + k), ` (${what}${"default" in s ? `, default ${s.default}${u}` : ""})`,
+      (schema.required ?? []).includes(k) ? h("b", {}, " required") : null,
+      s.description ? h("div", { class: "muted" }, s.description) : null)];
+  });
+  $("methods-ref").replaceChildren(
+    h("li", { class: "muted", style: "list-style:none;margin-left:-18px" },
+      `${ui.methods.app} ${$("version").value}: ${ui.methods.description?.replace(/^[^:]+: /, "") ?? ""} ` +
+      "A config is a list of these calls, run in order on the node."),
+    ...scriptableMethods(ui.methods).map(m => h("li", { style: "margin-top:8px" },
+      h("code", {}, h("b", {}, m.name)),
+      m.per_device ? h("span", { class: "badge warn" }, "per-device: not allowed in shared configs") : null,
+      m.reboots ? h("span", { class: "badge" }, "reboots the node") : null,
+      h("div", {}, m.description ?? ""),
+      m.params?.properties ? h("ul", {}, rows(m.params)) : h("div", { class: "muted" }, "Takes no parameters."))));
 }
 
 async function renderConfigs(selectId) {
@@ -288,8 +315,9 @@ function renderBuilder() {
 
 function renderFields(fields, i, parentIncluded = true) {
   return fields.map(f => {
-    const on = f.required || f.included;
-    const toggle = f.required ? null : h("input", {
+    const on = f.required || f.included || f.kind === "bool";
+    // a boolean is always sent (its own switch is the setting); other optional settings get an include tick
+    const toggle = f.required || f.kind === "bool" ? null : h("input", {
       type: "checkbox", checked: f.included, title: "include this setting",
       onchange: e => edit(e.target.checked ? B.setParam(ui.script, i, f.path, f.value) : B.unsetParam(ui.script, i, f.path), true),
     });
@@ -368,7 +396,7 @@ $("save-profile").addEventListener("click", async () => {
   }
   const version = $("version").value;
   const rf = ui.methods.rf_stacks ? $("rf-stack").value : null;
-  const name = prompt("Name for this profile:", `${cfg.name} @ ${version}${rf ? ` · RF ${rf}` : ""}`)?.trim();
+  const name = prompt("Name for this profile:", `${cfg.name} @ ${$("app").value} ${version}${rf ? ` · RF ${rf}` : ""}`)?.trim();
   if (!name) return;
   const p = await addRecord(store, "profiles", {
     id: crypto.randomUUID(), name, app: $("app").value, version, config_id: cfg.id, config_name: cfg.name,
@@ -380,6 +408,86 @@ $("save-profile").addEventListener("click", async () => {
   await renderProfiles();
   syncNow();
   showTab("deploy");
+});
+
+// ---- files: load a config script or import a whole profile; export a profile ----
+
+function download(name, obj) {
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(new Blob([JSON.stringify(obj, null, 2)], { type: "application/json" }));
+  a.download = name;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+}
+
+function exportProfile(p) {
+  download(`${p.name.replace(/[^\w.-]+/g, "_")}.profile.json`, {
+    kind: "profile", name: p.name, app: p.app, version: p.version, rf_stack: p.rf_stack ?? null,
+    config_name: p.config_name, script: { calls: p.script.calls },
+  });
+}
+
+/** A file is a profile if it says so or carries a script plus app+version; a config if it has calls. */
+function classifyFile(obj) {
+  if (obj && typeof obj === "object" && !Array.isArray(obj)) {
+    if (obj.kind === "profile" || (obj.script && obj.app && obj.version)) return "profile";
+    if (Array.isArray(obj.calls)) return "config";
+  }
+  if (Array.isArray(obj)) return "config"; // a bare list of calls
+  return null;
+}
+
+async function importProfile(obj) {
+  const v = ui.apps.find(a => a.app === obj.app)?.versions.find(x => x.version === obj.version);
+  if (!v?.configurable) throw new Error(`${obj.app} ${obj.version} isn't in the catalogue (or has no configs)`);
+  const methods = await catalogue.json(obj.app, obj.version, "methods.json");
+  const script = { calls: obj.script?.calls ?? obj.calls ?? [] };
+  const errors = validateScript(script, methods, true);
+  const rfs = methods.rf_stacks;
+  const rf = rfs ? (obj.rf_stack ?? rfs.default) : null;
+  if (rfs && !rfs.versions.includes(rf)) errors.push(`radio stack must be one of ${rfs.versions.join(", ")}`);
+  if (errors.length) throw new Error(`the profile's config isn't valid for ${obj.app} ${obj.version}:\n- ${errors.join("\n- ")}`);
+  const taken = new Set(ui.profiles.map(p => p.name));
+  let name = String(obj.name ?? "imported profile");
+  while (taken.has(name)) name += " (imported)";
+  const p = await addRecord(store, "profiles", {
+    id: crypto.randomUUID(), name, app: obj.app, version: obj.version, config_id: null,
+    config_name: obj.config_name ?? "imported", script, rf_stack: rf, created_at: new Date().toISOString(), client: CLIENT,
+  });
+  catalogue.keepOffline(obj.app, obj.version).catch(() => {});
+  await store.setMeta("deployProfile", p.id);
+  await renderProfiles();
+  syncNow();
+  return p;
+}
+
+$("load-file").addEventListener("click", () => $("file-input").click());
+$("file-input").addEventListener("change", async e => {
+  const f = e.target.files[0];
+  e.target.value = "";
+  if (!f) return;
+  let obj;
+  try { obj = JSON.parse(await f.text()); } catch (err) { alert(`${f.name} isn't valid JSON: ${err.message}`); return; }
+  const kind = classifyFile(obj);
+  try {
+    if (kind === "profile") {
+      const p = await importProfile(obj);
+      alert(`Imported profile "${p.name}" (${p.app} ${p.version}).`);
+      showTab("deploy");
+    } else if (kind === "config") {
+      const app = $("app").value, version = $("version").value;
+      const notes = [];
+      if (obj.app && obj.app !== app) notes.push(`it was made for ${obj.app}, but ${app} is selected`);
+      if (obj.version && obj.version !== version) notes.push(`it was made for ${obj.version}, but ${version} is selected`);
+      if (notes.length && !confirm(`Load ${f.name} anyway? ${notes.join("; ")}. It will be checked against the selected version.`)) return;
+      const calls = Array.isArray(obj) ? obj : obj.calls;
+      edit({ calls: structuredClone(calls) }, true);
+    } else {
+      alert(`${f.name} isn't a config ({"calls": [...]}) or a profile file.`);
+    }
+  } catch (err) {
+    alert(`Couldn't load ${f.name}: ${err.message}`);
+  }
 });
 
 $("archive-config").addEventListener("click", async () => {
@@ -419,10 +527,16 @@ async function renderProfileDetail() {
   if (!p) { $("profile-detail").replaceChildren(); renderTarget(); return; }
   const offline = await catalogue.isOffline(p.app, p.version);
   if (gen !== profilesGen) return; // a newer render (or another selection) owns the card now
-  $("profile-detail").replaceChildren(h("div", { class: "detail" },
-    h("div", {}, h("b", {}, p.name),
+  const summary = h("div", { class: "row", style: "justify-content:space-between" },
+    h("span", { class: "muted" }, `${p.app} ${p.version}`,
       offline ? h("span", { class: "badge ok" }, "offline ✓") : h("span", { class: "badge warn" }, "needs network"),
       p._rejected ? h("span", { class: "badge bad" }, "refused by server") : null),
+    h("button", { class: "secondary small", "aria-expanded": String(ui.profileOpen),
+                  onclick: () => { ui.profileOpen = !ui.profileOpen; renderProfileDetail(); } },
+      ui.profileOpen ? "Hide profile" : "View profile"));
+  if (!ui.profileOpen) { $("profile-detail").replaceChildren(summary); renderTarget(); return; }
+  $("profile-detail").replaceChildren(summary, h("div", { class: "detail" },
+    h("div", {}, h("b", {}, p.name)),
     h("dl", { class: "kv", style: "margin-top:8px" },
       h("dt", {}, "firmware"), h("dd", {}, `${p.app} ${p.version}`),
       h("dt", {}, "radio stack"), h("dd", {}, p.rf_stack ?? "–"),
@@ -430,7 +544,9 @@ async function renderProfileDetail() {
       h("dt", {}, "created"), h("dd", {}, new Date(p.created_at).toLocaleString())),
     h("div", { class: "muted", style: "margin-top:8px" }, "Calls, run in order:"),
     h("ol", {}, p.script.calls.map(c => h("li", {}, h("code", {}, c.method), " ", h("span", { class: "muted mono" }, compact(c.params))))),
-    h("div", { class: "row" }, h("button", { class: "danger small", onclick: () => archiveProfile(p) }, "Archive profile"))));
+    h("div", { class: "row" },
+      h("button", { class: "secondary small", onclick: () => exportProfile(p) }, "Export JSON"),
+      h("button", { class: "danger small", onclick: () => archiveProfile(p) }, "Archive profile"))));
   renderTarget();
 }
 $("profile-select").addEventListener("change", async () => {
@@ -546,6 +662,13 @@ $("inspect").addEventListener("click", async () => {
 });
 
 // ============================== Fleet ==============================
+
+/** Signal strength chart (moved here from the dashboard): mounted the first time Fleet shows. */
+function showRssi() {
+  if (ui.rssi) return;
+  ui.rssi = mountChart({ root: $("rssi"), metric: "rssi", title: "Signal strength", unit: "dBm", key: "admin.rssi", height: 240 });
+  ui.rssi.reload().then(() => ui.rssi.connect());
+}
 
 async function refreshMetrics() {
   try {
@@ -801,6 +924,7 @@ window.__step = "rendering";
 setMode("form");
 await sync.refreshPending();
 await refreshAll();
+if (fleetVisible()) { refreshMetrics(); showRssi(); }
 await renderGateway();
 window.__appReady = true; // the start-up guard in provision.html stands down
 renderAlerts();

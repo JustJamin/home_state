@@ -1,8 +1,8 @@
 {
-  "name": "home_state Provision",
-  "short_name": "Provision",
-  "description": "Flash and configure home_state BLE nodes, online or off.",
-  "start_url": "/provision",
+  "name": "Server Temp",
+  "short_name": "Server Temp",
+  "description": "Server room chip temperatures, alerts, and admin for the BLE nodes (flash, configure, fleet), online or off.",
+  "start_url": "/",
   "scope": "/",
   "display": "standalone",
   "orientation": "portrait",
