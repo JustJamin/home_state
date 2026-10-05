@@ -29,12 +29,19 @@ The param schemas are machine-readable in [`firmware/config/methods.json`](../fi
 | `device.identify` | `{seconds?: 1–300}` (default 10) | `{seconds}`. Fast LED blink |
 | `device.reboot` | – | `{rebooting: true}`; reboots 300 ms later |
 | `ota.status` | – | `{transfer, received, size, next_partition, partition, state, rolled_back_from}` |
+| `readings.read` | `{boot_id?, after_uptime_s?, limit?: 1–50}` | `{boot_id, same_boot, now_uptime_s, board_id, buffered, more, readings: [{c, u, t}]}`: the last hour of readings for the phone gateway, oldest first, paged. A `boot_id` from an earlier boot is ignored and you get everything from the oldest. Not allowed in configs (v1.3.1+) |
+
+From v1.3.1 `device.info` also reports `family: "home_state-node"`. Any family app can be flashed over any other.
 
 `ble_address` is the address the node advertises from, which is what the scanner records (`readings.address`). On the ESP32-C6 it is the factory MAC + 2, e.g. `58:E6:C5:13:03:3E`.
 
 `device_id` is the chip's factory MAC from eFuse (e.g. `58e6c513033c`). It is permanent and matches the USB serial number. It's what the fleet record keys on. `board_id` is the short ID in adverts and readings (`hs-01`), stored in NVS and changed only with `board.set_id`.
 
-## Settings (v1)
+## Settings
+
+The intervals are common to every app. The `led` block **is the app's own** (`firmware/apps/<app>/app.json`; see `firmware/README.md`). Below is the original `hs_advertiser` set.
+
+### hs_advertiser
 
 ```json
 {"update_interval_ms": 5000, "adv_interval_ms": 1000, "led": {"mode": "blink", "blink_hz": 1}}
