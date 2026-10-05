@@ -93,5 +93,13 @@ home_state/
 - [ ] v1.4.0: phone as a Bluetooth gateway, beyond v1.3.1's manual collect. The phone receives node data and pushes it to the server when it has internet. Chrome on Android has no general advert scanning (`requestLEScan` is still behind a flag), so the node likely needs a GATT "readings" characteristic or a buffered log the phone reads over a connection.
 - [ ] Real sensors
 - [ ] Database backups
+- [ ] Scanner: `db.writer` only catches `OperationalError`. Any other insert error (e.g. a `DataError`) kills the writer task silently while scanning carries on, so nothing more is stored and the queue grows without limit. Log and skip bad records, and exit the process if the writer task dies.
+- [ ] Scanner: on SIGTERM the writer is cancelled with records still queued, so they're lost on every pod restart or rollout. Drain the queue (with a short timeout) before exiting.
+- [ ] Server Temp: `Broadcaster.run` reads `max(id)` outside its try block. If Postgres isn't reachable at startup, the poller task dies and the live stream and push alerts stay dead until the pod restarts. An error in the per-row loop (alerts/names) kills it the same way. Retry the initial query and guard the loop.
+- [ ] Server Temp: `asyncio.create_task(alerts.notify(...))` keeps no reference to the task, so it can be garbage-collected mid-send and its exceptions are never logged. Keep the tasks in a set and add a done-callback that logs errors.
+- [ ] Fleet metrics: `counter` is a uint16, so at the default 5 s update interval it wraps about every 91 h. The wrap (d ≈ -65535) is counted as a reboot in `resets`. Treat a drop with high `prev` and low `cur` (or `uptime_s` still rising) as a wrap.
+- [ ] Alerts: a rate-limited "high" still sets `above`, so the board later sends "back to normal" with no "high" alert before it. Only send "normal" if the matching "high" was sent.
+- [ ] Server Temp API has no auth. Anyone on the tailnet (and anyone reaching the `tailscale serve` HTTPS URL) can change the alert threshold, send test pushes and create deployments. At minimum, add a shared token on the POST endpoints.
+- [ ] `readings`: add an index on `received_at` (and/or `(address, id)`). `/api/readings` and `/api/fleet/metrics` filter by time across all boards, but the only index leads with `board_id`.
 
 Rows before 2026-10-04 20:30:52 UTC hold dummy temperatures (a triangle wave between 20.00 and 23.00). From then on, `temp_c` is the chip temperature.
