@@ -32,6 +32,7 @@ This project is blocked on these host items. They're tracked under `## home_stat
 - Docker + Compose (step 4)
 - k3s single-node (step 5)
 - Local image registry on `127.0.0.1:5000` that k3s pulls the scanner image from (step 5)
+- Tailscale HTTPS + `tailscale serve` → https://lenovo.tailc2dfa5.ts.net/ for the provisioning page, because Web Bluetooth needs HTTPS (v1.1.0)
 
 ---
 
