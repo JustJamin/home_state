@@ -26,3 +26,6 @@ void ota_mark_valid(void);
 /* For JSON-RPC: add partition/state/rolled_back_from to obj; OTA transfer status. */
 void ota_add_info(cJSON *obj);
 cJSON *ota_status_json(void);
+
+/* Marker every node-family app carries; images without it are refused (WRONG_FAMILY). */
+extern const char FAMILY_MARKER[];

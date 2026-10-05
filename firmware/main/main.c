@@ -11,6 +11,7 @@
 
 #include "driver/temperature_sensor.h"
 #include "esp_log.h"
+#include "esp_random.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
@@ -43,6 +44,13 @@ static uint16_t s_conn = BLE_HS_CONN_HANDLE_NONE;
 static SemaphoreHandle_t s_adv_lock;
 static bool s_adv_ready; /* host synced: safe to (re)start advertising */
 static esp_timer_handle_t s_restart_timer;
+
+/* Recent readings, kept for the phone gateway (readings.read): the last hour at 5 s. */
+#define HS_RING 720
+static hs_reading_t s_ring[HS_RING];
+static size_t s_ring_head, s_ring_count; /* head = next slot to write */
+static SemaphoreHandle_t s_ring_lock;
+static uint32_t s_boot_id;               /* random per boot: counters/uptime restart at a reboot */
 
 static void put_u16_le(uint8_t *p, uint16_t v)
 {
@@ -207,6 +215,49 @@ static void log_payload(void)
              s_conn != BLE_HS_CONN_HANDLE_NONE ? " (connected)" : "");
 }
 
+uint32_t hs_boot_id(void)
+{
+    return s_boot_id;
+}
+
+static void record_reading(void)
+{
+    hs_reading_t r = {
+        .counter = s_counter,
+        .uptime_s = (uint32_t)(esp_timer_get_time() / 1000000),
+        .temp_c_x100 = (int16_t)(s_mfg[6] | (s_mfg[7] << 8)),
+    };
+    xSemaphoreTake(s_ring_lock, portMAX_DELAY);
+    s_ring[s_ring_head] = r;
+    s_ring_head = (s_ring_head + 1) % HS_RING;
+    if (s_ring_count < HS_RING) {
+        s_ring_count++;
+    }
+    xSemaphoreGive(s_ring_lock);
+}
+
+size_t hs_readings_after(int64_t after_uptime_s, hs_reading_t *out, size_t max, bool *more, size_t *buffered)
+{
+    size_t n = 0;
+    *more = false;
+    xSemaphoreTake(s_ring_lock, portMAX_DELAY);
+    size_t start = (s_ring_head + HS_RING - s_ring_count) % HS_RING; /* oldest */
+    for (size_t i = 0; i < s_ring_count; i++) {
+        const hs_reading_t *r = &s_ring[(start + i) % HS_RING];
+        if ((int64_t)r->uptime_s <= after_uptime_s) {
+            continue;
+        }
+        if (n == max) {
+            *more = true;
+            break;
+        }
+        out[n++] = *r;
+    }
+    *buffered = s_ring_count;
+    xSemaphoreGive(s_ring_lock);
+    return n;
+}
+
 static void update_task(void *arg)
 {
     for (;;) {
@@ -214,6 +265,7 @@ static void update_task(void *arg)
 
         s_counter++;
         build_payload();
+        record_reading();
 
         int rc = adv_restart();
         if (rc != 0) {
@@ -280,6 +332,7 @@ static void on_sync(void)
     }
 
     build_payload();
+    record_reading();
     s_adv_ready = true;
     rc = adv_restart();
     if (rc != 0) {
@@ -323,6 +376,8 @@ void app_main(void)
     s_board_id = load_board_id();
     snprintf(s_name, sizeof(s_name), "hs-%02u", s_board_id);
     s_adv_lock = xSemaphoreCreateMutex();
+    s_ring_lock = xSemaphoreCreateMutex();
+    s_boot_id = esp_random();
     led_init();
 
     /* -10..80 C is the range with the best accuracy on the C6 */

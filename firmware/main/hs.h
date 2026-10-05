@@ -2,19 +2,18 @@
 /* Shared interface between the hs_advertiser modules. */
 
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
+#include "app.h"
 #include "cJSON.h"
 
 /* ---- settings (settings.c): persisted in NVS, changed via config.set ---- */
 
-typedef enum { LED_OFF = 0, LED_BLINK, LED_HEARTBEAT } led_mode_t;
-
 typedef struct {
     uint32_t update_interval_ms; /* payload refresh */
     uint16_t adv_interval_ms;    /* advertising interval */
-    led_mode_t led_mode;
-    float led_blink_hz;
+    app_led_t led;               /* the app's own LED settings (app.h) */
 } hs_settings_t;
 
 void settings_load(void);
@@ -34,6 +33,17 @@ float hs_temp_c(void);          /* NAN if the sensor read fails */
 bool hs_connected(void);
 void hs_settings_changed(void); /* re-apply advert interval etc. */
 void hs_restart_after(uint32_t ms);
+
+/* Readings kept for the phone gateway (main.c) */
+typedef struct {
+    uint16_t counter;
+    uint32_t uptime_s;
+    int16_t temp_c_x100; /* INT16_MIN = no reading */
+} hs_reading_t;
+uint32_t hs_boot_id(void);
+/* Copy up to max buffered readings with uptime_s > after_uptime_s (-1 = all), oldest first.
+ * *more: there are more after these; *buffered: how many the node holds in total. */
+size_t hs_readings_after(int64_t after_uptime_s, hs_reading_t *out, size_t max, bool *more, size_t *buffered);
 
 /* ---- LED (led.c) ---- */
 

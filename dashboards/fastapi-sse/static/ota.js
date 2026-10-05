@@ -7,7 +7,7 @@ export const SVC = uuid(0), INFO = uuid(1), CTRL = uuid(2), DATA = uuid(3);
 
 const CMD = { BEGIN: 1, END: 2, APPLY: 3, ABORT: 4, SYNC: 5 };
 const RSP = { BEGIN: 0x81, END: 0x82, APPLY: 0x83, ABORT: 0x84, SYNC: 0x85, NAK: 0x91 };
-const STATUS = ["OK", "BAD_STATE", "TOO_BIG", "FLASH", "BAD_OFFSET", "HASH", "IMAGE_INVALID", "WRONG_PROJECT", "BAD_CMD"];
+const STATUS = ["OK", "BAD_STATE", "TOO_BIG", "FLASH", "BAD_OFFSET", "HASH", "IMAGE_INVALID", "WRONG_PROJECT", "BAD_CMD", "WRONG_FAMILY"];
 
 export class OtaError extends Error {}
 
