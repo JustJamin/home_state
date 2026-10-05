@@ -11,6 +11,8 @@ import { Sync } from "./static/sync.js";
 import { deploy } from "./static/deploy.js";
 import * as B from "./static/builder.js";
 import { buildFleetView, derivedBleAddress, seenState } from "./static/fleetview.js";
+import * as GW from "./static/gateway.js";
+import { aligned, byBoard, colours, trim } from "./static/dashview.js";
 
 const methods = JSON.parse(readFileSync(new URL("../../firmware/apps/hs_advertiser/methods.json", import.meta.url)));
 const vectors = JSON.parse(readFileSync(new URL("./tests/script_vectors.json", import.meta.url)));
@@ -336,6 +338,85 @@ function fakeServer() {
   assert.equal(fast.devices[1].metrics, null, "no readings for a device the scanner hasn't heard");
   assert.deepEqual(v.unprovisioned.map(m => m.address), ["11:22:33:44:55:66"]);
   ok("fleetview.js: grouping, last-good profile, metrics join, unprovisioned");
+}
+
+// ---------- gateway.js ----------
+{
+  // a node buffering readings: counter c at uptime u = 5c, paged by readings.read like the firmware
+  const node = { ring: [], boot: 111, now: 0, board: 2 };
+  const push = n => { for (let i = 0; i < n; i++) { const c = node.ring.length; node.ring.push({ c, u: c * 5, t: 30 + c / 10 }); node.now = c * 5 + 2; } };
+  const rpc = { async call(m, p = {}) {
+    if (m === "device.info") return { device_id: "58e6c5195088", ble_address: "58:E6:C5:19:50:8A", board_id: node.board, app: "single-blink", version: "v1.3.1" };
+    if (m !== "readings.read") throw Object.assign(new Error("method not found"), { code: -32601 });
+    const same = p.boot_id === undefined || p.boot_id === node.boot;
+    const after = same && p.after_uptime_s !== undefined ? p.after_uptime_s : -1;
+    const rest = node.ring.filter(r => r.u > after);
+    return { boot_id: node.boot, same_boot: same, now_uptime_s: node.now, board_id: node.board, buffered: node.ring.length,
+             more: rest.length > (p.limit ?? 50), readings: rest.slice(0, p.limit ?? 50) };
+  } };
+  const store = new MemoryStore();
+  const T = Date.parse("2026-10-05T12:00:00Z");
+  push(120);
+  let r = await GW.collect({ rpc }, store, { now: () => T });
+  assert.equal(r.collected, 120, "paged across 3 calls (50 + 50 + 20)");
+  const rows = (await store.all("gateway")).sort((a, b) => a.counter - b.counter);
+  assert.equal(rows[0].counter, 0, "includes the reading at uptime 0");
+  // reading 119 was taken at uptime 595; node uptime now 597 -> 2 s before collection
+  assert.equal(rows[119].received_at, new Date(T - 2000).toISOString());
+  assert.equal(rows[0].received_at, new Date(T - 597000).toISOString());
+  assert.equal(rows[0].address, "58:E6:C5:19:50:8A");
+  assert.equal(rows[0].name, "hs-02");
+  r = await GW.collect({ rpc }, store, { now: () => T + 1000 });
+  assert.equal(r.collected, 0, "nothing new: cursor remembered");
+  push(3);
+  r = await GW.collect({ rpc }, store, { now: () => T + 20000 });
+  assert.equal(r.collected, 3);
+  assert.equal(await store.count("gateway"), 123);
+  // node reboots: new boot id, counters restart -> everything it has is taken, ids don't collide
+  node.ring = []; node.boot = 222; push(4);
+  const logs = [];
+  r = await GW.collect({ rpc }, store, { now: () => T + 60000, log: m => logs.push(m) });
+  assert.equal(r.collected, 4);
+  assert.ok(logs.some(l => l.includes("rebooted")));
+  assert.equal(await store.count("gateway"), 127);
+  // old firmware without the buffer
+  const old = { rpc: { call: async m => (m === "device.info" ? { device_id: "x", ble_address: "AA:AA:AA:AA:AA:AA", board_id: 1, app: "hs_advertiser", version: "v1.3.0" } : (() => { throw Object.assign(new Error("nf"), { code: -32601 }); })()) } };
+  await assert.rejects(GW.collect(old, new MemoryStore()), /needs firmware v1\.3\.1/);
+  await assert.rejects(GW.collect({ rpc: null }, new MemoryStore()), /no JSON-RPC/);
+
+  // upload: batches, rows removed only once the server has them
+  const posts = [];
+  const fetchFn = async (url, init) => {
+    const body = JSON.parse(init.body);
+    posts.push(body.readings.length);
+    return new Response(JSON.stringify({ inserted: body.readings.length - 1, duplicates: 1 }));
+  };
+  const up = await GW.upload(store, { fetchFn, batch: 50 });
+  assert.deepEqual(posts, [50, 50, 27]);
+  assert.deepEqual(up, { inserted: 124, duplicates: 3, uploaded: 127 });
+  assert.equal(await store.count("gateway"), 0);
+  // a failed upload keeps everything for next time
+  await store.put("gateway", { ...rows[0] });
+  await assert.rejects(GW.upload(store, { fetchFn: async () => new Response("no", { status: 503 }) }), /HTTP 503/);
+  assert.equal(await store.count("gateway"), 1);
+  ok("gateway.js: paged collect, uptime->time, cursor, reboot, old firmware, batched upload");
+}
+
+// ---------- dashview.js ----------
+{
+  const rows = [
+    { board: "hs-02", received_at: "2026-10-05T10:00:05Z", temp_c: 31, rssi: -50 },
+    { board: "hs-01", received_at: "2026-10-05T10:00:00Z", temp_c: 30, rssi: -60 },
+    { board: "hs-01", received_at: "2026-10-05T10:00:10Z", temp_c: 30.5, rssi: -61 },
+  ];
+  const s = byBoard(rows);
+  const d = aligned(s, ["hs-01", "hs-02"], "temp");
+  assert.equal(d[0].length, 3);
+  assert.deepEqual(d.slice(1), [[30, null, 30.5], [null, 31, null]], "one column per board on a shared axis");
+  assert.deepEqual(colours(["hs-02", "hs-01"]), colours(["hs-01", "hs-02"]), "colour by name, not by order seen");
+  trim(s, 0.1, Date.parse("2026-10-05T10:00:10Z") / 1000);
+  assert.deepEqual([s["hs-01"].temp, s["hs-02"].temp], [[30.5], [31]]);
+  ok("dashview.js: per-board aligned series, stable colours, range trim");
 }
 
 console.log(`\n${passed} test groups passed`);

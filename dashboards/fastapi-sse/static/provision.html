@@ -96,7 +96,10 @@
 <header class="top">
   <div class="titlebar">
     <h1>📡 Provision</h1>
-    <a href="/">Dashboard ›</a>
+    <span>
+      <button class="secondary icon" id="bell" title="Temperature alerts" aria-label="Temperature alerts">🔔</button>
+      <a href="/" style="margin-left:8px">Dashboard ›</a>
+    </span>
   </div>
   <div class="status">
     <span class="pill" id="st-online">…</span>
@@ -108,11 +111,31 @@
     <button data-tab="deploy" class="active">Deploy</button>
     <button data-tab="build">Build</button>
     <button data-tab="fleet">Fleet</button>
+    <button data-tab="gateway">Gateway</button>
   </nav>
 </header>
 
 <main>
   <div id="unsupported" class="result bad"></div>
+
+  <!-- ===== Alerts (opened from the bell) ===== -->
+  <section class="card hidden" id="alerts-card">
+    <div class="row" style="margin-top:0;justify-content:space-between">
+      <h2 style="margin:0">🔔 Temperature alerts</h2>
+      <button class="secondary icon" id="alerts-close" title="close">✕</button>
+    </div>
+    <label class="row" style="margin-top:4px"><input type="checkbox" id="alerts-on"> <span>Notify this phone when a chip gets too hot, even with the app closed</span></label>
+    <div class="muted" id="alerts-status"></div>
+    <label class="field" for="threshold">Alert above (°C, every board)</label>
+    <div class="fld-ctl"><input type="range" id="threshold-range" min="20" max="80" step="0.5"><input type="number" id="threshold" min="20" max="80" step="0.5"></div>
+    <label class="field" for="clear-below">Back to normal below (°C)</label>
+    <div class="fld-ctl"><input type="number" id="clear-below" min="0" max="80" step="0.5"></div>
+    <div class="muted" id="threshold-info"></div>
+    <div class="row">
+      <button class="grow" id="threshold-save">Save threshold</button>
+      <button class="secondary grow" id="alerts-test">Send test alert</button>
+    </div>
+  </section>
 
   <!-- ===== Deploy ===== -->
   <div data-panel="deploy">
@@ -177,6 +200,24 @@
       </div>
       <div class="row"><button class="danger small" id="archive-config">Archive this config</button></div>
       <details class="ref"><summary>Methods for this version</summary><ul id="methods-ref"></ul></details>
+    </section>
+  </div>
+
+  <!-- ===== Gateway ===== -->
+  <div data-panel="gateway" class="hidden">
+    <section class="card">
+      <h2>Phone as a gateway</h2>
+      <div class="muted">Collect the readings a node has buffered (its last hour) over Bluetooth, even with no
+        internet here. They're kept on the phone and uploaded when it's back online; readings the server
+        already has are skipped.</div>
+      <div class="row"><button class="grow" id="gw-collect">Collect from a node…</button></div>
+      <div class="result" id="gw-result"></div>
+      <div class="row" style="justify-content:space-between">
+        <span id="gw-pending" class="muted"></span>
+        <button class="secondary small" id="gw-upload">Upload now</button>
+      </div>
+      <div id="gw-devices"></div>
+      <pre class="log" id="gw-log"></pre>
     </section>
   </div>
 

@@ -43,6 +43,9 @@ const serverDeployments = [
 const serverProfiles = [{ id: "p-fast", name: "fast-blink", app: "hs_advertiser", version: VER, config_id: null, config_name: "default",
   script: { calls: defaults.calls }, rf_stack: "v1", created_at: iso(500), client: "test", seq: 3 }];
 const pushed = [];
+let alertCfg = { threshold_c: 35, clear_below_c: 34, changed_at: null, vapid_public_key: "BAAA", push_enabled: true };
+const savedThresholds = [];
+const gatewayUploads = [];
 const metrics = [
   { address: "58:E6:C5:13:03:3E", board_id: 1, last_seen: iso(2), rssi_last: -57, rssi_avg_1h: -56, readings: 17000, missed: 40, resets: 3, capture_pct: 99.77, uptime_s: 900, temp_c: 30 },
   { address: "58:E6:C5:19:50:8A", board_id: 2, last_seen: iso(1), rssi_last: -51, rssi_avg_1h: -52, readings: 700, missed: 0, resets: 1, capture_pct: 100, uptime_s: 300, temp_c: 31 },
@@ -63,6 +66,19 @@ globalThis.fetch = window.fetch = async (input, init = {}) => {
   }
   if (p === "/api/sync") return json({ seq: 3, configs: [], profiles: serverProfiles, deployments: serverDeployments, archives: [] });
   if (p === "/api/fleet/metrics") return json(metrics);
+  if (p === "/api/alerts/config" && init.method === "POST") {
+    const b = JSON.parse(init.body);
+    if (!(b.clear_below_c < b.threshold_c)) return json({ detail: "bad" }, 422);
+    alertCfg = { ...alertCfg, threshold_c: b.threshold_c, clear_below_c: b.clear_below_c, changed_at: new Date().toISOString() };
+    savedThresholds.push(b.threshold_c);
+    return json(alertCfg);
+  }
+  if (p === "/api/alerts/config") return json(alertCfg);
+  if (p === "/api/gateway/readings") {
+    const b = JSON.parse(init.body);
+    gatewayUploads.push(b.readings.length);
+    return json({ inserted: b.readings.length, duplicates: 0 });
+  }
   return json({ detail: "not found" }, 404);
 };
 const cacheStore = new Map();
@@ -200,6 +216,34 @@ assert.match($("target-line").textContent, /Target: hs-02 · 58e6c5195088 \(only
 click($("target-line").querySelector("button"));
 assert.match($("target-line").textContent, /any hs-\* node/);
 ok("Fleet -> Deploy: targets that node (chooser filtered by name), target can be cleared");
+
+// ---------- Alerts panel ----------
+click($("bell"));
+await waitFor(() => !$("alerts-card").classList.contains("hidden") && $("threshold").value === "35", "alerts panel with threshold");
+assert.match($("threshold-info").textContent, /Currently 35 °C, back to normal below 34 °C · default/);
+assert.equal($("alerts-on").checked, false, "not subscribed in this browser");
+$("threshold").value = "33"; fire($("threshold"), "input");
+assert.equal($("threshold-range").value, "33", "slider follows the number box");
+$("clear-below").value = "32"; fire($("clear-below"), "input");
+click($("threshold-save"));
+await waitFor(() => savedThresholds.includes(33) && /Currently 33 °C, back to normal below 32 °C · set/.test($("threshold-info").textContent), "threshold saved");
+$("threshold").value = "30"; $("clear-below").value = "31";
+click($("threshold-save"));
+assert.ok(alerts.some(a => /must be lower/.test(a)), "clear-below must be under the threshold");
+ok("Alerts: bell opens the panel; threshold loads, saves to the server, validated");
+
+// ---------- Gateway tab ----------
+const { IdbStore } = await import(new URL("static/store.js", here).href);
+const s2 = await IdbStore.open();
+await s2.put("gateway", { id: "58:E6:C5:19:50:8A:1:5", address: "58:E6:C5:19:50:8A", board_id: 2, name: "hs-02", counter: 1, temp_c: 30,
+                          uptime_s: 5, received_at: new Date().toISOString() });
+tab("gateway");
+await waitFor(() => /1 reading waiting to upload/.test($("gw-pending").textContent), "pending gateway reading shown");
+assert.match($("st-pending").textContent, /1 to sync/, "counted in the header too");
+click($("gw-upload"));
+await waitFor(() => gatewayUploads.length === 1 && /Nothing waiting/.test($("gw-pending").textContent), "uploaded");
+assert.match($("gw-log").textContent, /uploaded 1 gateway reading/);
+ok("Gateway: pending readings shown, uploaded on sync, cleared");
 
 console.log(`\n${passed} UI checks passed`);
 process.exit(0);

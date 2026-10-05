@@ -4,12 +4,15 @@
 //   catalogue files (/api/apps/<app>/<version>/<file>): cache-first, they're immutable
 //     (catalogue.js fills the same cache when it keeps a version offline)
 //   other /api/*: straight to the network; the app handles being offline itself
-const SHELL = "hs-shell-v2";
+//   push: temperature alerts from the server; tapping one opens the dashboard (/) in the app
+const SHELL = "hs-shell-v3";
 const CATALOGUE = "hs-catalogue";
 const SHELL_FILES = [
   "/provision", "/manifest.webmanifest", "/static/theme.css",
   "/static/app.js", "/static/ota.js", "/static/rpc.js", "/static/schema.js", "/static/store.js",
   "/static/sync.js", "/static/catalogue.js", "/static/deploy.js", "/static/builder.js", "/static/fleetview.js",
+  "/static/gateway.js", "/", "/static/dashboard.js", "/static/dashview.js",
+  "/static/vendor/uPlot.iife.min.js", "/static/vendor/uPlot.min.css",
   "/static/icons/icon-192.png", "/static/icons/icon-512.png",
 ];
 const NETWORK_TIMEOUT_MS = 3000; // offline with the VPN half-up, fetches can hang rather than fail
@@ -59,4 +62,33 @@ self.addEventListener("fetch", e => {
   if (SHELL_FILES.includes(url.pathname) || url.pathname.startsWith("/static/")) {
     return e.respondWith(networkFirst(e.request));
   }
+});
+
+// ---------- push alerts ----------
+
+self.addEventListener("push", e => {
+  let d = {};
+  try { d = e.data?.json() ?? {}; } catch { d = { body: e.data?.text() }; }
+  e.waitUntil(self.registration.showNotification(d.title ?? "home_state", {
+    body: d.body ?? "", tag: d.tag, renotify: Boolean(d.tag),
+    icon: "/static/icons/icon-192.png", badge: "/static/icons/icon-192.png",
+    data: { url: d.url ?? "/" },
+  }));
+});
+
+// open the dashboard in the installed app: reuse an open app window if there is one
+self.addEventListener("notificationclick", e => {
+  e.notification.close();
+  const url = new URL(e.notification.data?.url ?? "/", self.location.origin).href;
+  e.waitUntil((async () => {
+    const wins = await self.clients.matchAll({ type: "window", includeUncontrolled: true });
+    for (const w of wins) {
+      if (new URL(w.url).origin === self.location.origin) {
+        await w.focus();
+        if (new URL(w.url).pathname !== new URL(url).pathname && "navigate" in w) await w.navigate(url);
+        return;
+      }
+    }
+    await self.clients.openWindow(url);
+  })());
 });

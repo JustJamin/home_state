@@ -12,6 +12,7 @@ import { Node } from "./ota.js";
 import { deploy } from "./deploy.js";
 import * as B from "./builder.js";
 import { buildFleetView, seenState } from "./fleetview.js";
+import * as GW from "./gateway.js";
 
 const $ = id => document.getElementById(id);
 const CLIENT = `provision/${navigator.userAgent.match(/Chrome\/[\d.]+/)?.[0] ?? "browser"}`;
@@ -69,6 +70,7 @@ if (!navigator.bluetooth) {
 // ---------------- tabs + status ----------------
 
 function showTab(name) {
+  if (name === "gateway") renderGateway();
   for (const x of document.querySelectorAll("nav.tabs button")) x.classList.toggle("active", x.dataset.tab === name);
   for (const p of document.querySelectorAll("[data-panel]")) p.classList.toggle("hidden", p.dataset.panel !== name);
   if (name === "fleet") { renderFleet(); refreshMetrics(); }
@@ -77,18 +79,27 @@ function showTab(name) {
 for (const b of document.querySelectorAll("nav.tabs button")) b.addEventListener("click", () => showTab(b.dataset.tab));
 const fleetVisible = () => !document.querySelector('[data-panel="fleet"]').classList.contains("hidden");
 
-sync.onChange(s => {
+let gwPending = 0; // gateway readings waiting to upload (counted in "to sync")
+function renderStatus(s = sync.state) {
   const on = $("st-online");
   on.textContent = s.online === null ? "…" : s.online ? "● online" : "○ offline";
   on.className = `pill ${s.online ? "on" : s.online === false ? "off" : ""}`;
-  $("st-pending").textContent = `${s.pending} to sync`;
-  $("st-pending").classList.toggle("hidden", !s.pending);
+  const n = s.pending + gwPending;
+  $("st-pending").textContent = `${n} to sync`;
+  $("st-pending").classList.toggle("hidden", !n);
   $("st-last").textContent = s.lastSync ? `synced ${ago(s.lastSync)}` : "";
-});
+}
+sync.onChange(renderStatus);
 
 async function syncNow() {
   const r = await sync.run();
   if (r) {
+    try {
+      const up = await GW.upload(store);
+      if (up.uploaded) gwLog(`uploaded ${up.uploaded} gateway reading(s): ${up.inserted} new, ${up.duplicates} the server already had`);
+    } catch (e) { gwLog(`upload failed: ${e.message}`); }
+    await renderGateway();
+    loadAlerts();
     if (r.rejected.length) alert(`The server refused ${r.rejected.length} record(s):\n` + r.rejected.map(x => x.errors.join("; ")).join("\n"));
     await refreshAll();
     catalogue.ensureOffline(ui.apps).then(renderProfiles);
@@ -616,6 +627,159 @@ function deviceRow(d) {
       h("div", { class: "muted" }, `${new Date(x.finished_at).toLocaleString()} · board ${x.board_id ?? "–"} · ${x.results.length} call(s)${x.error ? ` · ${x.error}` : ""}`)))));
 }
 
+// ============================== Alerts ==============================
+// One fleet-wide threshold lives on the server (it sends the alerts); this phone subscribes
+// to Web Push so alerts arrive with the app closed. Tapping one opens the dashboard (sw.js).
+
+let alertsCfg = (await store.getMeta("alerts")) ?? null;
+
+const b64ToBytes = s => {
+  const b = atob(s.replace(/-/g, "+").replace(/_/g, "/") + "===".slice((s.length + 3) % 4));
+  return Uint8Array.from(b, c => c.charCodeAt(0));
+};
+
+async function pushSubscription() {
+  if (!("serviceWorker" in navigator) || !("PushManager" in window)) return null;
+  const reg = await navigator.serviceWorker.ready;
+  return reg.pushManager.getSubscription();
+}
+
+async function loadAlerts() {
+  try {
+    const r = await fetch("api/alerts/config");
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    alertsCfg = await r.json();
+    await store.setMeta("alerts", alertsCfg);
+  } catch { /* offline: keep the cached copy */ }
+  await renderAlerts();
+}
+
+async function renderAlerts() {
+  const c = alertsCfg;
+  const online = sync.state.online !== false;
+  const sub = await pushSubscription().catch(() => null);
+  $("alerts-on").checked = Boolean(sub) && typeof Notification !== "undefined" && Notification.permission === "granted";
+  $("bell").textContent = $("alerts-on").checked ? "🔔" : "🔕";
+  if (c) {
+    if (document.activeElement !== $("threshold")) $("threshold").value = c.threshold_c;
+    if (document.activeElement !== $("threshold-range")) $("threshold-range").value = c.threshold_c;
+    if (document.activeElement !== $("clear-below")) $("clear-below").value = c.clear_below_c;
+    $("threshold-info").textContent = `Currently ${c.threshold_c} °C, back to normal below ${c.clear_below_c} °C` +
+      (c.changed_at ? ` · set ${ago(c.changed_at)}` : " · default") + (online ? "" : " · offline: shown read-only");
+  }
+  const perm = typeof Notification === "undefined" ? "unsupported" : Notification.permission;
+  $("alerts-status").textContent =
+    perm === "denied" ? "Notifications are blocked for this site: allow them in Chrome's site settings." :
+    c && !c.push_enabled ? "The server has no push keys configured, so alerts can't be sent." :
+    $("alerts-on").checked ? "This phone will be notified." : "Off for this phone.";
+  for (const id of ["threshold", "threshold-range", "clear-below", "threshold-save"]) $(id).disabled = !online || !c;
+  $("alerts-test").disabled = !online || !$("alerts-on").checked;
+  $("alerts-on").disabled = !online || !c?.push_enabled;
+}
+
+$("bell").addEventListener("click", () => { $("alerts-card").classList.toggle("hidden"); loadAlerts(); });
+$("alerts-close").addEventListener("click", () => $("alerts-card").classList.add("hidden"));
+$("threshold-range").addEventListener("input", e => { $("threshold").value = e.target.value; });
+$("threshold").addEventListener("input", e => { $("threshold-range").value = e.target.value; });
+
+$("alerts-on").addEventListener("change", async e => {
+  try {
+    if (e.target.checked) {
+      if ((await Notification.requestPermission()) !== "granted") throw new Error("notification permission not given");
+      const reg = await navigator.serviceWorker.ready;
+      const sub = (await reg.pushManager.getSubscription()) ??
+        await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: b64ToBytes(alertsCfg.vapid_public_key) });
+      const r = await fetch("api/push/subscribe", { method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ...sub.toJSON(), client: CLIENT }) });
+      if (!r.ok) throw new Error((await r.json()).detail ?? `HTTP ${r.status}`);
+    } else {
+      const sub = await pushSubscription();
+      if (sub) {
+        await fetch("api/push/unsubscribe", { method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ endpoint: sub.endpoint }) }).catch(() => {});
+        await sub.unsubscribe();
+      }
+    }
+  } catch (err) {
+    alert(`Couldn't change alerts: ${err.message}`);
+  }
+  renderAlerts();
+});
+
+$("threshold-save").addEventListener("click", async () => {
+  const threshold_c = Number($("threshold").value), clear_below_c = Number($("clear-below").value);
+  if (!(clear_below_c < threshold_c)) { alert("'Back to normal below' must be lower than the alert threshold."); return; }
+  try {
+    const r = await fetch("api/alerts/config", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ threshold_c, clear_below_c, client: CLIENT }) });
+    const body = await r.json();
+    if (!r.ok) throw new Error(typeof body.detail === "string" ? body.detail : JSON.stringify(body.detail));
+    alertsCfg = body;
+    await store.setMeta("alerts", alertsCfg);
+  } catch (err) {
+    alert(`Couldn't save the threshold: ${err.message}`);
+  }
+  renderAlerts();
+});
+
+$("alerts-test").addEventListener("click", async () => {
+  try {
+    const r = await (await fetch("api/push/test", { method: "POST" })).json();
+    $("alerts-status").textContent = r.sent
+      ? `Test alert sent to ${r.sent} phone${r.sent === 1 ? "" : "s"}. Close the app to see it arrive.`
+      : "No phone received it: check that alerts are on.";
+  } catch (err) {
+    $("alerts-status").textContent = `Test failed: ${err.message}`;
+  }
+});
+
+// ============================== Gateway ==============================
+
+function gwLog(msg) {
+  $("gw-log").textContent += `${new Date().toLocaleTimeString()}  ${msg}\n`;
+  $("gw-log").scrollTop = $("gw-log").scrollHeight;
+}
+
+async function renderGateway() {
+  gwPending = await store.count("gateway");
+  renderStatus();
+  $("gw-pending").textContent = gwPending
+    ? `${gwPending} reading${gwPending === 1 ? "" : "s"} waiting to upload`
+    : "Nothing waiting to upload.";
+  $("gw-upload").disabled = !gwPending;
+  const devices = [];
+  for (const f of await fleet(store)) {
+    const c = await store.getMeta(`gw:${f.device_id}`);
+    if (c) devices.push([f.device_id, c]);
+  }
+  $("gw-devices").replaceChildren(...(devices.length ? [h("div", { class: "muted", style: "margin-top:10px" }, "Last collected:"),
+    ...devices.map(([id, c]) => h("div", { class: "hist" },
+      h("b", {}, c.name), h("span", { class: "muted mono" }, ` · ${id}`),
+      h("div", { class: "muted" }, `${ago(c.last_collect)} · ${c.collected} reading(s) that time`)))] : []));
+}
+
+$("gw-collect").addEventListener("click", async () => {
+  let node;
+  try { node = await Node.choose(); } catch (e) { if (e.name !== "NotFoundError") alert(e.message); return; }
+  const res = $("gw-result");
+  try {
+    const r = await GW.collect(node, store, { log: gwLog });
+    res.className = "result show ok";
+    res.textContent = `✓ ${r.collected} new reading${r.collected === 1 ? "" : "s"} from ${node.device.name}` +
+      (sync.state.online === false ? " · kept on the phone until you're back online" : "");
+  } catch (e) {
+    res.className = "result show bad";
+    res.textContent = `✗ ${e.message}`;
+    gwLog(`FAILED: ${e.message}`);
+  } finally {
+    node.disconnect();
+  }
+  await renderGateway();
+  syncNow();
+});
+
+$("gw-upload").addEventListener("click", syncNow);
+
 // ============================== go ==============================
 
 async function refreshAll() {
@@ -627,4 +791,6 @@ async function refreshAll() {
 setMode("form");
 await sync.refreshPending();
 await refreshAll();
+await renderGateway();
+renderAlerts();
 syncNow();
