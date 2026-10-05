@@ -52,10 +52,12 @@ static bool no_params(const cJSON *params, rpc_error_t *err)
 
 /* ---- methods ---- */
 
+/* Device ID: the factory MAC burned into eFuse (6 bytes, never changes).
+ * Not esp_efuse_mac_get_default(): on the C6 that returns the 8-byte EUI-64. */
 static void device_id(char *out, size_t len)
 {
-    uint8_t mac[6] = {0};
-    esp_efuse_mac_get_default(mac);
+    uint8_t mac[8] = {0};
+    esp_read_mac(mac, ESP_MAC_EFUSE_FACTORY);
     snprintf(out, len, "%02x%02x%02x%02x%02x%02x", mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
 }
 
