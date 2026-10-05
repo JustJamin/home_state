@@ -7,3 +7,6 @@ build/
 firmware/sdkconfig
 firmware/sdkconfig.old
 firmware/build-*/
+
+# firmware releases served by the provisioning page (durable copies: ~/home_state-firmware on lenovo)
+dashboards/fastapi-sse/firmware/*.bin
