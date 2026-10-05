@@ -74,6 +74,16 @@ def catalogue() -> dict[str, dict[str, dict]]:
     return apps
 
 
+def rf_stack_errors(rf_stack: str | None, methods: dict) -> list[str]:
+    """A profile's radio stack must be one its firmware version declares (or none if it declares none)."""
+    rf = methods.get("rf_stacks")
+    if not rf:
+        return [] if rf_stack is None else ["this firmware version declares no radio stack versions"]
+    if rf_stack not in rf.get("versions", []):
+        return [f"radio stack must be one of {', '.join(rf['versions'])}"]
+    return []
+
+
 def methods_for(app: str, version: str) -> dict | None:
     entry = catalogue().get(app, {}).get(version)
     if not entry or not entry["configurable"]:
@@ -121,6 +131,7 @@ class Profile(BaseModel):
     config_id: uuid.UUID | None = None
     config_name: str
     script: dict
+    rf_stack: str | None = None  # radio stack version; must be one the firmware version declares
     created_at: datetime
     client: str | None = None
 
@@ -134,6 +145,8 @@ class Deployment(BaseModel):
     app: str
     version: str
     from_version: str | None = None
+    rf_stack: str | None = None
+    ble_address: str | None = Field(None, pattern=r"^([0-9A-F]{2}:){5}[0-9A-F]{2}$")
     flashed: bool
     script: dict
     results: list
@@ -204,6 +217,8 @@ async def sync_push(body: SyncPush) -> dict:
                         methods = methods_for(rec.app, rec.version)
                         errors = (["unknown or non-configurable firmware version"] if methods is None
                                   else validate_script(rec.script, methods, shared=True))
+                        if methods is not None and table == "profiles":
+                            errors += rf_stack_errors(rec.rf_stack, methods)
                         if errors:
                             rejected.append({"table": table, "id": str(rec.id), "errors": errors})
                             continue
@@ -222,8 +237,8 @@ async def fleet() -> list[dict]:
     """One row per device: its latest deployment and how many it has had."""
     async with need_pool().connection() as conn:
         rows = await (await conn.execute("""
-            SELECT DISTINCT ON (device_id) device_id, board_id, profile_id, profile_name, app, version,
-                   ok, error, finished_at, flashed,
+            SELECT DISTINCT ON (device_id) device_id, board_id, ble_address, profile_id, profile_name, app,
+                   version, rf_stack, ok, error, finished_at, flashed,
                    count(*) OVER (PARTITION BY device_id) AS deployments
             FROM provisioning.deployments
             ORDER BY device_id, finished_at DESC""")).fetchall()
