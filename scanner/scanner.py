@@ -99,25 +99,32 @@ async def main() -> None:
             queue.put_nowait(record)
 
     stalled = deaf = False
-    async with BleakScanner(make_callback(queue), bluez={"adapter": BLE_ADAPTER}):
-        log.info("scanning for company ID 0x%04X", COMPANY_ID)
-        while not stop.is_set():
-            try:
-                await asyncio.wait_for(stop.wait(), timeout=10)
-            except TimeoutError:
-                if time.monotonic() - window_start >= HEARTBEAT_SECONDS:
-                    heartbeat()
-                silent = time.monotonic() - _last_advert
-                if writer_task is not None and writer_task.done():
-                    log.error("database writer stopped (%r), exiting", writer_task.exception())
-                    stalled = True
-                    break
-                if silent > STALL_SECONDS:
-                    log.error("no BLE adverts for %.0fs; scanning has stalled, exiting", silent)
-                    heartbeat()  # record the deaf window before the restart
-                    await asyncio.sleep(1)  # let the writer store it
-                    stalled = deaf = True
-                    break
+    try:
+        async with BleakScanner(make_callback(queue), bluez={"adapter": BLE_ADAPTER}):
+            log.info("scanning for company ID 0x%04X", COMPANY_ID)
+            while not stop.is_set():
+                try:
+                    await asyncio.wait_for(stop.wait(), timeout=10)
+                except TimeoutError:
+                    if time.monotonic() - window_start >= HEARTBEAT_SECONDS:
+                        heartbeat()
+                    silent = time.monotonic() - _last_advert
+                    if writer_task is not None and writer_task.done():
+                        log.error("database writer stopped (%r), exiting", writer_task.exception())
+                        stalled = True
+                        break
+                    if silent > STALL_SECONDS:
+                        log.error("no BLE adverts for %.0fs; scanning has stalled, exiting", silent)
+                        heartbeat()  # record the deaf window before the restart
+                        await asyncio.sleep(1)  # let the writer store it
+                        stalled = deaf = True
+                        break
+    except Exception as e:
+        if not stalled:
+            raise
+        # a deaf or reset adapter has usually dropped the scan already ("No discovery
+        # started"): don't let that stop the adapter reset below
+        log.warning("couldn't stop scanning cleanly: %s", e)
 
     if writer_task is not None:
         writer_task.cancel()
