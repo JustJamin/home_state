@@ -79,7 +79,7 @@ def test_message_lists_other_failures_and_recovery():
     m = health.message([("recovered", c("bluetooth", "ok"))], [c("bluetooth", "ok"), c("readings", "fail")])
     assert "recovered" in m["title"] and "Still failing: Readings arriving" in m["body"]
     m = health.message([("recovered", c("bluetooth", "ok"))], [c("bluetooth", "ok")])
-    assert "All system checks are OK" in m["body"]
+    assert m["body"] == "Nothing is failing now."
 
 
 # ---------------- Kubernetes evaluation (pure) ----------------

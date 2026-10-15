@@ -128,7 +128,7 @@ def message(events: list[tuple[str, dict]], checks: list[dict]) -> dict:
         body = f"Still failing: {', '.join(c['label'] for c in failing)}"
     else:
         title = f"✅ home_state: {', '.join(c['label'] for c in recovered)} recovered"
-        body = "All system checks are OK again."
+        body = "Nothing is failing now."
     # one tag: the latest system notification replaces the last one on the phone
     return {"title": title, "body": body, "tag": "health", "url": "/admin#gateway"}
 
