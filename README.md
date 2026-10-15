@@ -94,7 +94,6 @@ home_state/
 - [ ] v1.4.0: phone as a Bluetooth gateway, beyond v1.3.1's manual collect. The phone receives node data and pushes it to the server when it has internet. Chrome on Android has no general advert scanning (`requestLEScan` is still behind a flag), so the node likely needs a GATT "readings" characteristic or a buffered log the phone reads over a connection.
 - [ ] Real sensors
 - [ ] Database backups
-- [ ] Scanner self-heal: on 2026-10-15 the adapter stayed deaf after its USB power came back on, until `bluetoothctl power off` / `power on`. The scanner's stall restart doesn't do that, so it crash-looped. Before exiting on a stall, it could toggle `org.bluez.Adapter1.Powered` over D-Bus (check that BlueZ's policy lets uid 65534 do it).
 - [ ] Scanner: on SIGTERM the writer is cancelled with records still queued, so they're lost on every pod restart or rollout. Drain the queue (with a short timeout) before exiting.
 - [ ] Fleet metrics: `counter` is a uint16, so at the default 5 s update interval it wraps about every 91 h. The wrap (d ≈ -65535) is counted as a reboot in `resets`. Treat a drop with high `prev` and low `cur` (or `uptime_s` still rising) as a wrap.
 - [ ] Server Temp API has no auth. Anyone on the tailnet (and anyone reaching the `tailscale serve` HTTPS URL) can change the alert threshold, send test pushes and create deployments. At minimum, add a shared token on the POST endpoints.
