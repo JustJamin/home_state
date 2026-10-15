@@ -129,3 +129,14 @@ kubectl -n home-state create secret generic webpush --from-literal=private-key=<
 ```
 
 The `subject` is sent to the push service as the contact for these alerts. It's the app's URL, not a personal email. The dashboard pod must reach the push services (FCM); pod egress is open.
+
+#### v1.3.2: migration 008 and health-check access
+
+`initdb/008_v1_3_2.sql` adds `scanner_heartbeat` (one row the scanner replaces every 30 s, readable by `dashboards`) and an index on `readings (received_at)`.
+
+```sh
+kubectl -n home-state exec -i postgres-0 -- psql -U home_state -v ON_ERROR_STOP=1 < deploy/initdb/008_v1_3_2.sql
+kubectl apply -k deploy        # also adds k8s/health-rbac.yaml
+```
+
+`k8s/health-rbac.yaml` gives `dash-fastapi-sse` its own ServiceAccount that can only **read**: pods in `home-state` (readiness, crash loops, restarts) and nodes (disk, memory and PID pressure). It's used by the health checks in `health.py`, shown on the Admin app's Gateway tab.
