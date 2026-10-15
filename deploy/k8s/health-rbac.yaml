@@ -1,0 +1,51 @@
+# v1.3.2: read-only Kubernetes access for the Server Temp app's health checks (health.py):
+# list the pods in home-state (readiness, crash loops, restarts) and read the node's
+# conditions (disk / memory / PID pressure). No write access and no secrets.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: dash-fastapi-sse
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: health-read-pods
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: dash-fastapi-sse-health
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: health-read-pods
+subjects:
+  - kind: ServiceAccount
+    name: dash-fastapi-sse
+---
+# nodes aren't namespaced, so this one is cluster-wide (still read-only)
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: home-state-health-read-nodes
+rules:
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: home-state-health-read-nodes
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: home-state-health-read-nodes
+subjects:
+  - kind: ServiceAccount
+    name: dash-fastapi-sse
+    namespace: home-state

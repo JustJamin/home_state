@@ -23,15 +23,22 @@ log = logging.getLogger("scanner")
 # dropped our discovery session) and exit so the container gets restarted.
 STALL_SECONDS = int(os.environ.get("STALL_SECONDS", "120"))
 
+# Every HEARTBEAT_SECONDS the scanner records how much it heard (scanner_heartbeat, read by
+# the Server Temp app's health checks): adverts from ANY device show the adapter is alive
+# even when no board is in range, and zero means the adapter has gone deaf.
+HEARTBEAT_SECONDS = int(os.environ.get("HEARTBEAT_SECONDS", "30"))
+
 # board_id -> last counter seen; adverts repeat ~5x per counter value
 _last_counter: dict[int, int] = {}
 _last_advert = time.monotonic()
+_heard = {"adverts": 0, "readings": 0}  # since the last heartbeat
 
 
 def make_callback(queue: asyncio.Queue | None):
     def on_advert(device: BLEDevice, adv: AdvertisementData) -> None:
         global _last_advert
         _last_advert = time.monotonic()
+        _heard["adverts"] += 1
 
         data = adv.manufacturer_data.get(COMPANY_ID)
         if data is None:
@@ -43,6 +50,7 @@ def make_callback(queue: asyncio.Queue | None):
         if _last_counter.get(reading.board_id) == reading.counter:
             return
         _last_counter[reading.board_id] = reading.counter
+        _heard["readings"] += 1
 
         record = {
             "ts": datetime.now(timezone.utc).isoformat(timespec="seconds"),
@@ -72,6 +80,20 @@ async def main() -> None:
         queue = asyncio.Queue()
         writer_task = asyncio.create_task(writer(url, queue))
 
+    started_at = datetime.now(timezone.utc)
+    window_start = time.monotonic()
+
+    def heartbeat() -> None:
+        nonlocal window_start
+        now = time.monotonic()
+        record = {"kind": "heartbeat", "started_at": started_at, "window_s": round(now - window_start, 1),
+                  "adverts": _heard["adverts"], "readings": _heard["readings"],
+                  "last_advert_s": round(now - _last_advert, 1)}
+        _heard.update(adverts=0, readings=0)
+        window_start = now
+        if queue is not None:
+            queue.put_nowait(record)
+
     stalled = False
     async with BleakScanner(make_callback(queue)):
         log.info("scanning for company ID 0x%04X", COMPANY_ID)
@@ -79,9 +101,17 @@ async def main() -> None:
             try:
                 await asyncio.wait_for(stop.wait(), timeout=10)
             except TimeoutError:
+                if time.monotonic() - window_start >= HEARTBEAT_SECONDS:
+                    heartbeat()
                 silent = time.monotonic() - _last_advert
+                if writer_task is not None and writer_task.done():
+                    log.error("database writer stopped (%r), exiting", writer_task.exception())
+                    stalled = True
+                    break
                 if silent > STALL_SECONDS:
                     log.error("no BLE adverts for %.0fs; scanning has stalled, exiting", silent)
+                    heartbeat()  # record the deaf window before the restart
+                    await asyncio.sleep(1)  # let the writer store it
                     stalled = True
                     break
 

@@ -44,6 +44,7 @@ class Event:
 class _Board:
     above: bool
     last_high: float | None = None
+    reported: bool = False  # the current "above" episode was alerted (not rate-limited)
 
 
 @dataclass
@@ -64,18 +65,21 @@ class AlertEngine:
             return []
         b = self.boards.get(address)
         if b is None:  # first sighting since startup: prime silently
-            self.boards[address] = _Board(above=temp_c > self.threshold_c)
+            above = temp_c > self.threshold_c  # (assume a hot board's alert went out before the restart)
+            self.boards[address] = _Board(above=above, reported=above)
             return []
         if not b.above and temp_c > self.threshold_c:
             b.above = True
             now = self.clock()
             if b.last_high is not None and now - b.last_high < self.min_interval_s:
+                b.reported = False
                 return []  # rate-limited
-            b.last_high = now
+            b.last_high, b.reported = now, True
             return [Event("high", address, name, temp_c, self.threshold_c)]
         if b.above and temp_c < self.clear_below_c:
             b.above = False
-            return [Event("normal", address, name, temp_c, self.threshold_c)]
+            # only after a "high" the phone actually got
+            return [Event("normal", address, name, temp_c, self.threshold_c)] if b.reported else []
         return []
 
 
@@ -94,6 +98,23 @@ pool = None  # provisioning pool (set by app.py at startup)
 VAPID_PRIVATE = os.environ.get("VAPID_PRIVATE_KEY")  # PEM or base64url raw
 VAPID_PUBLIC = os.environ.get("VAPID_PUBLIC_KEY")    # base64url uncompressed point (applicationServerKey)
 VAPID_SUBJECT = os.environ.get("VAPID_SUBJECT", "mailto:admin@example.invalid")
+
+
+last_delivery: dict | None = None  # {at, sent, failed, removed} of the last real send (health check)
+_tasks: set = set()
+
+
+def background(coro) -> None:
+    """Run a send in the background, keeping a reference (so it can't be garbage-collected
+    mid-send) and logging its error instead of losing it."""
+    t = asyncio.create_task(coro)
+    _tasks.add(t)
+
+    def done(t):
+        _tasks.discard(t)
+        if not t.cancelled() and t.exception():
+            print(f"background send failed: {t.exception()!r}", flush=True)
+    t.add_done_callback(done)
 
 
 def push_enabled() -> bool:
@@ -125,7 +146,11 @@ async def send_all(payload: dict) -> dict:
         async with pool.connection() as conn:
             await conn.execute("DELETE FROM provisioning.push_subscriptions WHERE endpoint = ANY(%s)", (gone,))
     ok = sum(1 for st in statuses if 200 <= st < 300)
-    return {"sent": ok, "removed": len(gone), "failed": len(subs) - ok - len(gone), "enabled": True}
+    r = {"sent": ok, "removed": len(gone), "failed": len(subs) - ok - len(gone), "enabled": True}
+    if subs:
+        global last_delivery
+        last_delivery = {**r, "at": time.time()}
+    return r
 
 
 async def notify(events: list[Event]) -> None:

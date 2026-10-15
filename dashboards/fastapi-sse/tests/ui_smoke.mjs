@@ -51,6 +51,16 @@ let alertCfg = { threshold_c: 35, clear_below_c: 34, changed_at: null, vapid_pub
 const savedThresholds = [];
 const fleetNames = { "58e6c513033c": "rack-1" };
 const gatewayUploads = [];
+const T0 = new Date(Date.now() - 4 * 60000).toISOString();
+const hc = (id, label, status, detail, extra = {}) => ({ id, label, status, detail, since: T0, ...extra });
+let healthDown = false;
+const healthCalls = [];
+let healthSnap = { checked_at: new Date().toISOString(), status: "fail", checks: [
+  hc("database", "Readings database", "ok", "answering (3 ms)"),
+  hc("bluetooth", "Bluetooth adapter", "fail", "heard nothing from any Bluetooth device for 2 min: lenovo's adapter may be suspended or reset"),
+  hc("boards", "Boards", "warn", "1 of 2 reporting · quiet: hs-02", { items: [
+    { name: "hs-01", status: "ok", detail: "last reading 4 s ago" }, { name: "hs-02", status: "warn", detail: "last reading 5 days ago" }] }),
+] };
 const metrics = [
   { address: "58:E6:C5:13:03:3E", board_id: 1, last_seen: iso(2), rssi_last: -57, rssi_avg_1h: -56, readings: 17000, missed: 40, resets: 3, capture_pct: 99.77, uptime_s: 900, temp_c: 30 },
   { address: "58:E6:C5:19:50:8A", board_id: 2, last_seen: iso(1), rssi_last: -51, rssi_avg_1h: -52, readings: 700, missed: 0, resets: 1, capture_pct: 100, uptime_s: 300, temp_c: 31 },
@@ -92,6 +102,11 @@ globalThis.fetch = window.fetch = async (input, init = {}) => {
     return json(alertCfg);
   }
   if (p === "/api/alerts/config") return json(alertCfg);
+  if (p === "/api/health" || p === "/api/health/check") {
+    if (healthDown) throw new TypeError("Failed to fetch");
+    healthCalls.push(init.method ?? "GET");
+    return json(healthSnap);
+  }
   if (p === "/api/gateway/readings") {
     const b = JSON.parse(init.body);
     gatewayUploads.push(b.readings.length);
@@ -362,6 +377,43 @@ click($("gw-upload"));
 await waitFor(() => gatewayUploads.length === 1 && /Nothing waiting/.test($("gw-pending").textContent), "uploaded");
 assert.match($("gw-log").textContent, /uploaded 1 gateway reading/);
 ok("Gateway: pending readings shown, uploaded on sync, cleared");
+
+// ---------- System health (Gateway tab) ----------
+await waitFor(() => /Bluetooth adapter/.test($("health-list").textContent), "server health shown");
+const hcRows = () => [...window.document.querySelectorAll("#health-list .hc")];
+const row = label => hcRows().find(r => r.querySelector(".lbl").textContent === label);
+assert.deepEqual([...window.document.querySelectorAll("#health-list .health-group")].map(g => g.textContent), ["This phone", "home_state server"]);
+assert.ok(row("Bluetooth adapter").classList.contains("fail"));
+assert.match(row("Bluetooth adapter").textContent, /failing for 4 min.*suspended/);
+assert.ok(row("Server connection").classList.contains("ok"));
+assert.ok(row("Alerts on this phone").classList.contains("warn"), "alerts are off in the test browser");
+assert.equal(row("Boards").querySelectorAll(".hc-item").length, 2, "boards listed inside");
+assert.match($("health-overall").textContent, /1 failing · 2 warnings/);
+assert.ok($("health-overall").classList.contains("fail"));
+assert.ok(!$("health-tab-dot").classList.contains("hidden") && $("health-tab-dot").classList.contains("fail"), "tab shows a red dot");
+ok("Health: phone + server checks, failing check with its duration, board items, overall pill, tab dot");
+
+healthSnap = { ...healthSnap, checked_at: new Date().toISOString(), status: "ok",
+               checks: healthSnap.checks.map(c => ({ ...c, status: "ok" })) };
+click($("health-check"));
+await waitFor(() => healthCalls.at(-1) === "POST" && row("Bluetooth adapter").classList.contains("ok"), "check now");
+assert.ok($("health-tab-dot").classList.contains("hidden"), "system OK: no tab dot (this phone's alerts setting doesn't count)");
+ok("Health: Check now re-runs the server checks; tab dot clears when the system is OK");
+
+healthDown = true;
+click($("health-check"));
+await waitFor(() => row("Server connection").classList.contains("fail"), "server unreachable");
+assert.match(row("Server connection").textContent, /can't reach the server.*last known status/);
+assert.match($("health-age").textContent, /last known/);
+assert.ok(row("Bluetooth adapter"), "the last snapshot is still shown");
+assert.ok(!$("health-tab-dot").classList.contains("hidden"));
+healthDown = false;
+ok("Health: server unreachable shows the last known status");
+
+tab("fleet");
+window.location.hash = "#gateway";
+await waitFor(() => !window.document.querySelector('[data-panel="gateway"]').classList.contains("hidden"), "hash opens Gateway");
+ok("Health: /admin#gateway (a health notification) opens the Gateway tab");
 
 console.log(`\n${passed} UI checks passed`);
 process.exit(0);

@@ -14,6 +14,7 @@ import * as B from "./builder.js";
 import { buildFleetView, seenState, NAME_RE } from "./fleetview.js";
 import { mount as mountChart } from "./livechart.js";
 import * as GW from "./gateway.js";
+import * as H from "./health.js";
 
 const $ = id => document.getElementById(id);
 const CLIENT = `provision/${navigator.userAgent.match(/Chrome\/[\d.]+/)?.[0] ?? "browser"}`;
@@ -81,7 +82,7 @@ if (!navigator.bluetooth) {
 // ---------------- tabs + status ----------------
 
 function showTab(name) {
-  if (name === "gateway") renderGateway();
+  if (name === "gateway") { renderGateway(); refreshHealth(); }
   for (const x of document.querySelectorAll("nav.tabs button")) x.classList.toggle("active", x.dataset.tab === name);
   for (const p of document.querySelectorAll("[data-panel]")) p.classList.toggle("hidden", p.dataset.panel !== name);
   if (name === "fleet") { renderFleet(); refreshMetrics(); showRssi(); }
@@ -942,6 +943,7 @@ async function renderGateway() {
     const c = await store.getMeta(`gw:${f.device_id}`);
     if (c) devices.push([f.device_id, c]);
   }
+  renderHealth();
   $("gw-devices").replaceChildren(...(devices.length ? [h("div", { class: "muted", style: "margin-top:10px" }, "Last collected:"),
     ...devices.map(([id, c]) => h("div", { class: "hist" },
       h("b", {}, c.name), h("span", { class: "muted mono" }, ` · ${id}`),
@@ -970,6 +972,84 @@ $("gw-collect").addEventListener("click", async () => {
 
 $("gw-upload").addEventListener("click", syncNow);
 
+// ============================== System health ==============================
+
+const STATUS_WORD = { ok: "OK", warn: "warning", fail: "failing", unknown: "unknown" };
+const health = { snapshot: (await store.getMeta("health")) ?? null, reach: null, busy: false };
+const lasted = iso => {
+  const s = (Date.now() - Date.parse(iso)) / 1000;
+  return s < 90 ? `${Math.max(0, Math.round(s))} s` : s < 5400 ? `${Math.round(s / 60)} min` :
+    s < 172800 ? `${Math.round(s / 3600)} h` : `${Math.round(s / 86400)} days`;
+};
+
+function healthRow(c) {
+  const unit = { boards: "board", pods: "pod", node: "node" }[c.id] ?? "item";
+  const items = c.items?.length
+    ? h("details", {}, h("summary", {}, `${c.items.length} ${unit}${c.items.length === 1 ? "" : "s"}`),
+        ...c.items.map(i => h("div", { class: "hc-item" }, h("span", { class: `dot ${i.status}`, title: STATUS_WORD[i.status] }),
+          h("b", {}, i.name), h("span", { class: "muted" }, i.detail))))
+    : null;
+  return h("div", { class: `hc ${c.status}` },
+    h("span", { class: `dot ${c.status}`, title: STATUS_WORD[c.status] }),
+    h("div", { class: "hc-body" },
+      h("span", { class: "lbl" }, c.label),
+      h("span", { class: "st" }, STATUS_WORD[c.status] + (c.since && c.status !== "ok" ? ` for ${lasted(c.since)}` : "")),
+      h("div", { class: "det" }, c.detail), items));
+}
+
+async function renderHealth() {
+  const sub = await pushSubscription().catch(() => null);
+  const perm = typeof Notification === "undefined" ? "unsupported" : Notification.permission;
+  const phone = H.phoneChecks({
+    reach: health.reach ?? { ok: false, error: "not checked yet", lastKnownAt: health.snapshot?.checked_at },
+    sync: { pending: sync.state.pending + gwPending, lastSync: sync.state.lastSync },
+    alerts: { on: Boolean(sub) && perm === "granted", permission: perm },
+  }, ago);
+  const server = health.snapshot?.checks ?? [];
+  const all = [...phone, ...server];
+  const overall = H.worst(all.map(c => c.status));
+  $("health-overall").textContent = `● ${H.summary(all)}`;
+  $("health-overall").className = `pill ${overall}`;
+  $("health-list").replaceChildren(
+    h("div", { class: "health-group" }, "This phone"), ...phone.map(healthRow),
+    h("div", { class: "health-group" }, "home_state server"),
+    ...(server.length ? server.map(healthRow) : [h("div", { class: "muted" }, "No status from the server yet.")]));
+  $("health-age").textContent = health.snapshot
+    ? `Server checked ${ago(health.snapshot.checked_at)}${health.reach?.ok ? "" : " (last known)"}` : "";
+  // the tab's dot: the system itself (not this phone's own settings)
+  const sys = H.worst([...server.map(c => c.status), phone[0].status]);
+  $("health-tab-dot").className = `dot tab-dot ${sys}${sys === "ok" || sys === "unknown" ? " hidden" : ""}`;
+  $("health-tab-dot").title = `System health: ${STATUS_WORD[sys]}`;
+}
+
+async function refreshHealth(checkNow = false) {
+  if (health.busy) return;
+  health.busy = true;
+  try {
+    const { snapshot, rttMs } = await H.fetchHealth({ checkNow });
+    health.snapshot = snapshot;
+    health.reach = { ok: true, rttMs };
+    store.setMeta("health", snapshot).catch(() => {});
+  } catch (e) {
+    health.reach = { ok: false, error: e.message, lastKnownAt: health.snapshot?.checked_at };
+  } finally {
+    health.busy = false;
+  }
+  await renderHealth();
+}
+$("health-check").addEventListener("click", () => refreshHealth(true));
+setInterval(() => refreshHealth(), 30000);
+
+// a health notification opens /admin#gateway
+function tabFromHash() {
+  const t = window.location.hash.slice(1);
+  if ([...document.querySelectorAll("nav.tabs button")].some(b => b.dataset.tab === t)) showTab(t);
+}
+window.addEventListener("hashchange", tabFromHash);
+navigator.serviceWorker?.addEventListener("message", e => {  // a notification tapped while the app is open
+  if (e.data?.type === "show" && e.data.hash) { window.history.replaceState(null, "", e.data.hash); tabFromHash(); }
+});
+
 // ============================== go ==============================
 
 async function refreshAll() {
@@ -985,6 +1065,8 @@ await refreshAll();
 renderProfileButton();
 if (fleetVisible()) { refreshMetrics(); showRssi(); }
 await renderGateway();
+tabFromHash();
+refreshHealth();
 window.__appReady = true; // the start-up guard in provision.html stands down
 renderAlerts();
 syncNow();

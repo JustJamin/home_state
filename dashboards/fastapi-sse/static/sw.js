@@ -5,13 +5,13 @@
 //     (catalogue.js fills the same cache when it keeps a version offline)
 //   other /api/*: straight to the network; the app handles being offline itself
 //   push: temperature alerts from the server; tapping one opens the dashboard (/) in the app
-const SHELL = "hs-shell-v5";
+const SHELL = "hs-shell-v6";
 const CATALOGUE = "hs-catalogue";
 const SHELL_FILES = [
   "/admin", "/manifest.webmanifest", "/static/theme.css", "/static/livechart.js",
   "/static/app.js", "/static/ota.js", "/static/rpc.js", "/static/schema.js", "/static/store.js",
   "/static/sync.js", "/static/catalogue.js", "/static/deploy.js", "/static/builder.js", "/static/fleetview.js",
-  "/static/gateway.js", "/", "/static/dashboard.js", "/static/dashview.js",
+  "/static/gateway.js", "/static/health.js", "/", "/static/dashboard.js", "/static/dashview.js",
   "/static/vendor/uPlot.iife.min.js", "/static/vendor/uPlot.min.css",
   "/static/icons/icon-192.png", "/static/icons/icon-512.png",
 ];
@@ -88,7 +88,9 @@ self.addEventListener("notificationclick", e => {
     for (const w of wins) {
       if (new URL(w.url).origin === self.location.origin) {
         await w.focus();
-        if (new URL(w.url).pathname !== new URL(url).pathname && "navigate" in w) await w.navigate(url);
+        const to = new URL(url);
+        if (new URL(w.url).pathname === to.pathname) w.postMessage({ type: "show", hash: to.hash }); // e.g. #gateway
+        else if ("navigate" in w) await w.navigate(url);
         return;
       }
     }
