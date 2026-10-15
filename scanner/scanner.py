@@ -22,6 +22,10 @@ log = logging.getLogger("scanner")
 # scanning has silently died (e.g. the adapter re-enumerated on USB and BlueZ
 # dropped our discovery session) and exit so the container gets restarted.
 STALL_SECONDS = int(os.environ.get("STALL_SECONDS", "120"))
+# ...and first power-cycle the adapter (adapter.py): an adapter that has gone deaf can stay
+# deaf across scanner restarts until its controller is powered off and on.
+RESET_ADAPTER = os.environ.get("RESET_ADAPTER", "1") == "1"
+BLE_ADAPTER = os.environ.get("BLE_ADAPTER", "hci0")
 
 # Every HEARTBEAT_SECONDS the scanner records how much it heard (scanner_heartbeat, read by
 # the Server Temp app's health checks): adverts from ANY device show the adapter is alive
@@ -94,8 +98,8 @@ async def main() -> None:
         if queue is not None:
             queue.put_nowait(record)
 
-    stalled = False
-    async with BleakScanner(make_callback(queue)):
+    stalled = deaf = False
+    async with BleakScanner(make_callback(queue), bluez={"adapter": BLE_ADAPTER}):
         log.info("scanning for company ID 0x%04X", COMPANY_ID)
         while not stop.is_set():
             try:
@@ -112,11 +116,14 @@ async def main() -> None:
                     log.error("no BLE adverts for %.0fs; scanning has stalled, exiting", silent)
                     heartbeat()  # record the deaf window before the restart
                     await asyncio.sleep(1)  # let the writer store it
-                    stalled = True
+                    stalled = deaf = True
                     break
 
     if writer_task is not None:
         writer_task.cancel()
+    if deaf and RESET_ADAPTER:
+        import adapter
+        await adapter.reset(BLE_ADAPTER)  # after leaving the scanner, so the restart starts clean
     if stalled:
         raise SystemExit(1)
 

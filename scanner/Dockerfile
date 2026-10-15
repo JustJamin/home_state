@@ -4,7 +4,7 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY payload.py db.py scanner.py ./
+COPY payload.py db.py adapter.py scanner.py ./
 
 # BlueZ's D-Bus policy lets any user talk to org.bluez, so no root needed.
 # The host's dbus-daemon drops connections from uids it can't resolve, so
