@@ -26,6 +26,7 @@ from psycopg.rows import dict_row
 from psycopg_pool import AsyncConnectionPool
 
 import alerts
+import health
 import names
 import provisioning
 
@@ -46,9 +47,15 @@ class Broadcaster:
         self.last_id = 0
 
     async def run(self) -> None:
-        async with pool.connection() as conn:
-            row = await (await conn.execute("SELECT coalesce(max(id), 0) AS id FROM readings")).fetchone()
-            self.last_id = row["id"]
+        while True:  # the DB may not be up yet: keep trying rather than die
+            try:
+                async with pool.connection() as conn:
+                    row = await (await conn.execute("SELECT coalesce(max(id), 0) AS id FROM readings")).fetchone()
+                self.last_id = row["id"]
+                break
+            except Exception as e:
+                print(f"broadcaster start failed (retrying): {e}", flush=True)
+                await asyncio.sleep(5)
         # Poll even with no browsers connected, so last_id stays current and the
         # first browser to connect doesn't get a burst of old rows.
         while True:
@@ -63,12 +70,16 @@ class Broadcaster:
                 continue
             for r in rows:
                 self.last_id = r["id"]
-                r["label"] = names.label(r["address"], r["board"])
-                for q in self.subscribers:
-                    q.put_nowait(r)
-                events = alerts.engine.observe(r["address"], r["label"], r["temp_c"])
-                if events:
-                    asyncio.create_task(alerts.notify(events))
+                try:  # one bad row must not stop the stream (or the alerts) for good
+                    r["label"] = names.label(r["address"], r["board"])
+                    for q in self.subscribers:
+                        q.put_nowait(r)
+                    health.monitor.observe_reading(r["address"], r["label"], r["received_at"])
+                    events = alerts.engine.observe(r["address"], r["label"], r["temp_c"])
+                    if events:
+                        alerts.background(alerts.notify(events))
+                except Exception as e:
+                    print(f"row {r['id']} not handled: {e!r}", flush=True)
 
 
 broadcaster = Broadcaster()
@@ -78,6 +89,8 @@ broadcaster = Broadcaster()
 async def lifespan(_: FastAPI):
     await pool.open()
     provisioning.readings_pool = pool
+    health.readings_pool = pool
+    health.admin_pool = provisioning.pool
     if provisioning.pool:
         await provisioning.pool.open()
         alerts.pool = provisioning.pool
@@ -90,9 +103,10 @@ async def lifespan(_: FastAPI):
             await names.load()
         except Exception as e:  # e.g. migration 007 not applied yet: no names
             print(f"device names not loaded: {e}", flush=True)
-    task = asyncio.create_task(broadcaster.run())
+    tasks = [asyncio.create_task(broadcaster.run()), asyncio.create_task(health.monitor.run())]
     yield
-    task.cancel()
+    for t in tasks:
+        t.cancel()
     await pool.close()
     if provisioning.pool:
         await provisioning.pool.close()
@@ -114,6 +128,7 @@ app.mount("/static", RevalidatedStatic(directory=STATIC), name="static")
 app.include_router(provisioning.router)
 app.include_router(alerts.router)
 app.include_router(names.router)
+app.include_router(health.router)
 
 
 def to_json(r: dict) -> str:

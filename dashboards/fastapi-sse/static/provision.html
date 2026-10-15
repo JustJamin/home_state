@@ -86,6 +86,21 @@
   .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--bad); grid-row: span 2; }
   .dot.ok { background: var(--ok); } .dot.stale { background: var(--warn); }
   .dev-body { padding: 0 2px 12px 22px; min-width: 0; overflow-wrap: anywhere; }
+  /* system health (Gateway tab) */
+  .hc { display: flex; gap: 10px; align-items: flex-start; padding: 7px 0; border-top: 1px solid color-mix(in srgb, var(--line) 45%, transparent); }
+  .hc:first-of-type { border-top: 0; }
+  .dot { width: 10px; height: 10px; border-radius: 50%; flex: none; margin-top: .5em; background: var(--muted); }
+  .dot.ok { background: var(--ok); } .dot.warn { background: var(--warn); } .dot.fail { background: var(--bad); }
+  .hc .hc-body { min-width: 0; flex: 1; }
+  .hc .lbl { font-weight: 600; } .hc .st { font-size: .8rem; color: var(--muted); margin-left: 6px; }
+  .hc .det { font-size: .86rem; color: var(--muted); overflow-wrap: anywhere; }
+  .hc.fail .det { color: var(--bad); } .hc.warn .det { color: var(--warn); }
+  .hc details summary { cursor: pointer; font-size: .82rem; color: var(--muted); margin-top: 2px; }
+  .hc-item { font-size: .84rem; display: flex; gap: 8px; align-items: baseline; margin: 3px 0; overflow-wrap: anywhere; }
+  .hc-item .dot { width: 8px; height: 8px; margin-top: 0; }
+  .health-group { font-size: .78rem; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); margin: 12px 0 0; }
+  .pill.ok { color: var(--ok); } .pill.warn { color: var(--warn); } .pill.fail { color: var(--bad); }
+  nav.tabs .tab-dot { display: inline-block; width: 8px; height: 8px; margin: 0 0 0 6px; vertical-align: middle; }
   .hist { border-left: 2px solid var(--line); padding: 2px 0 2px 10px; margin: 6px 0; font-size: .86rem; overflow-wrap: anywhere; }
   .hist .badge, .dev-body .badge { white-space: normal; display: inline-block; max-width: 100%; }
   .chev { color: var(--muted); font-size: .9rem; transition: transform .15s; }
@@ -112,7 +127,7 @@
     <button data-tab="fleet" class="active">Fleet</button>
     <button data-tab="profile">Profile</button>
     <button data-tab="deploy">Deploy</button>
-    <button data-tab="gateway">Gateway</button>
+    <button data-tab="gateway">Gateway<span class="dot tab-dot hidden" id="health-tab-dot"></span></button>
   </nav>
 </header>
 
@@ -210,6 +225,19 @@
 
   <!-- ===== Gateway ===== -->
   <div data-panel="gateway" class="hidden">
+    <section class="card" id="health-card">
+      <div class="row" style="margin-top:0;justify-content:space-between">
+        <h2 style="margin:0">System health</h2>
+        <span class="pill" id="health-overall">…</span>
+      </div>
+      <div class="muted">The server checks every part of home_state every 30 s. Anything failing for 3 minutes
+        is pushed to phones with alerts on, and again when it recovers.</div>
+      <div id="health-list"></div>
+      <div class="row" style="justify-content:space-between">
+        <span class="muted" id="health-age"></span>
+        <button class="secondary small" id="health-check">Check now</button>
+      </div>
+    </section>
     <section class="card">
       <h2>Phone as a gateway</h2>
       <div class="muted">Collect the readings a node has buffered (its last hour) over Bluetooth, even with no

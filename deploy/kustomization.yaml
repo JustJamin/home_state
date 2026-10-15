@@ -9,6 +9,7 @@ resources:
   - k8s/grafana.yaml
   - k8s/dashboards.yaml
   - k8s/networkpolicy.yaml
+  - k8s/health-rbac.yaml
 
 configMapGenerator:
   - name: postgres-initdb
@@ -20,6 +21,7 @@ configMapGenerator:
       - initdb/005_v1_3.sql
       - initdb/006_v1_3_1.sql
       - initdb/007_device_names.sql
+      - initdb/008_v1_3_2.sql
   - name: grafana-datasources
     files:
       - grafana/datasource.yaml

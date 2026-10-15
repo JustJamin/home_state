@@ -54,7 +54,7 @@ def test_engine_rate_limits_high_alerts_per_board():
     assert kinds(e.observe("A", "a", 33)) == ["normal"]
     clk.t = 100
     assert e.observe("A", "a", 36) == []                # within 10 min of the last high: suppressed
-    assert kinds(e.observe("A", "a", 33)) == ["normal"]
+    assert e.observe("A", "a", 33) == []                # so no "back to normal" for it either
     clk.t = 700
     assert kinds(e.observe("A", "a", 36)) == ["high"]
     # boards are independent

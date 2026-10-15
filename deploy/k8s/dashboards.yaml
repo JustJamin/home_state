@@ -242,6 +242,7 @@ spec:
         app: dash-fastapi-sse
         role: dashboard
     spec:
+      serviceAccountName: dash-fastapi-sse  # read-only pods + node, for the health checks (health-rbac.yaml)
       securityContext:
         runAsUser: 65534
         runAsGroup: 65534
