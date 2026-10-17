@@ -5,7 +5,6 @@ namespace: home-state
 resources:
   - k8s/postgres.yaml
   - k8s/scanner.yaml
-  - k8s/grafana.yaml
   - k8s/dashboards.yaml
   - k8s/networkpolicy.yaml
   - k8s/health-rbac.yaml
@@ -14,19 +13,10 @@ configMapGenerator:
   - name: postgres-initdb
     files:
       - initdb/001_schema.sql
-      - initdb/002_grafana_role.sh
       - initdb/003_dashboards_role.sh
       - initdb/004_provisioning.sh
       - initdb/005_v1_3.sql
       - initdb/006_v1_3_1.sql
       - initdb/007_device_names.sql
       - initdb/008_v1_3_2.sql
-  - name: grafana-datasources
-    files:
-      - grafana/datasource.yaml
-  - name: grafana-dashboard-providers
-    files:
-      - grafana/dashboards.yaml
-  - name: grafana-dashboards
-    files:
-      - grafana/home_state.json
+      - initdb/009_drop_grafana.sql

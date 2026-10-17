@@ -61,7 +61,7 @@ Once the format settles, move this table into `docs/payload.md` and keep it as t
 3. **Scanner on the host:** a Python script using `bleak` that filters on company ID `0xFFFF`, decodes the payload and prints it.
 4. **Docker + Compose:** run the scanner and Postgres containers together and write readings to Postgres.
 5. **k3s:** a single-node cluster on lenovo. Put Postgres in a StatefulSet with a `local-path` PVC. Run the scanner as a Deployment pinned to lenovo that mounts the D-Bus socket via `hostPath`.
-6. **Later:** real sensors, backups of the database. (The Grafana dashboard is done; see `deploy/README.md`.)
+6. **Later:** real sensors, backups of the database.
 
 ## Planned layout
 
@@ -71,7 +71,7 @@ home_state/
   firmware/     <- XIAO ESP32-C6 transmitter code
   scanner/      <- Python BLE scanner + Dockerfile
   deploy/       <- compose.yaml, k8s/ manifests
-  dashboards/   <- alternative dashboards (Streamlit, Dash, NiceGUI, FastAPI+SSE)
+  dashboards/   <- FastAPI+SSE dashboard and Admin app
   docs/         <- payload format, OTA protocol
   tools/        <- bench tools (BLE OTA client)
 ```
@@ -84,14 +84,15 @@ home_state/
 - [x] Scanner script on the host
 - [x] Docker Compose: scanner + Postgres
 - [x] k3s deployment
-- [x] Grafana dashboard (k3s, tailnet-only: http://100.79.164.117:30300)
-- [x] Demo dashboards: Streamlit, Dash, NiceGUI, FastAPI+SSE on ports 30301–30304 (see `dashboards/README.md`)
+- [x] Grafana dashboard (k3s, tailnet-only, port 30300); retired in v1.3.6
+- [x] Demo dashboards: Streamlit, Dash, NiceGUI, FastAPI+SSE on ports 30301–30304 (see `dashboards/README.md`); only FastAPI+SSE (30304) kept after v1.3.6
 - [x] v1.1.0: provision nodes over BLE from the phone (`/provision`, [docs/ota-protocol.md](docs/ota-protocol.md))
 - [x] v1.2.0: JSON-RPC on nodes (USB + BLE), firmware/config/profile catalogue, one-touch fleet deploys, offline PWA
 - [x] v1.3.0: config builder form, Lacuna theme, fleet overview with network metrics, radio stack (RF module) version on profiles, deploy dropdown + fleet targeting, second board (hs-02)
 - [x] v1.3.1: two node apps (single-blink, double-blink), each with its own JSON-RPC config, switchable over the air; dashboard device toggles, time ranges and threshold line; temperature push alerts with a threshold set in the app; phone gateway (manual collect); the app is now "Server Temp" (opens on the dashboard) with an Admin side (Fleet, Profile, Deploy, Gateway); fleet device names
 - [x] v1.3.2: system health on the Admin app's Gateway tab: every part of home_state (database, scanner, Bluetooth adapter, readings, boards, pods, node, push) checked every 30 s, failures pushed to phones (after 3 min) and recoveries too; the scanner writes a heartbeat; fixes from the code review (scanner writer, broadcaster start-up, tracked alert sends, "back to normal" after a rate-limited alert, `received_at` index)
 - [x] v1.3.4: faster Admin app: it starts from the phone's saved copy instead of waiting on the server (the "still starting after 8 s" stalls), hung requests time out to offline, API responses are gzipped (24 h of chart data 3.2 MB → 200 KB); `tools/screenshot.mjs` for real-time headless screenshots
+- [x] v1.3.6: retired Grafana and the Streamlit, Dash and NiceGUI demo dashboards; the FastAPI+SSE dashboard and Admin app (30304) remain
 - [ ] v1.4.0: phone as a Bluetooth gateway, beyond v1.3.1's manual collect. The phone receives node data and pushes it to the server when it has internet. Chrome on Android has no general advert scanning (`requestLEScan` is still behind a flag), so the node likely needs a GATT "readings" characteristic or a buffered log the phone reads over a connection.
 - [ ] Real sensors
 - [ ] Database backups

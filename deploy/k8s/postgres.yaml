@@ -1,4 +1,4 @@
-# Needs the "postgres" Secret (key: password), plus the "grafana", "dashboards" and "provisioning" Secrets (key: db-password);
+# Needs the "postgres" Secret (key: password), plus the "dashboards" and "provisioning" Secrets (key: db-password);
 # both created by hand, see deploy/README.md.
 apiVersion: v1
 kind: Service
@@ -40,12 +40,6 @@ spec:
                 secretKeyRef:
                   name: postgres
                   key: password
-            # used once by initdb/002_grafana_role.sh on a fresh volume
-            - name: GRAFANA_DB_PASSWORD
-              valueFrom:
-                secretKeyRef:
-                  name: grafana
-                  key: db-password
             # used once by initdb/003_dashboards_role.sh on a fresh volume
             - name: DASHBOARDS_DB_PASSWORD
               valueFrom:

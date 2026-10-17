@@ -1,18 +1,11 @@
 #!/bin/sh
-# Build the demo dashboards, push them to the local registry and restart them in k3s.
-# Usage: deploy/push-dashboards.sh [name...]   (default: all of dashboards/*)
+# Build the dashboard (dashboards/fastapi-sse), push it to the local registry and restart it in k3s.
+# Usage: deploy/push-dashboards.sh
 set -eu
 cd "$(dirname "$0")/.."
 
-names=${*:-$(ls dashboards)}
-for name in $names; do
-    image=localhost:5000/home_state-dash-$name
-    docker build -t "$image:latest" "dashboards/$name"
-    docker push "$image:latest"
-done
-for name in $names; do
-    kubectl -n home-state rollout restart "deployment/dash-$name"
-done
-for name in $names; do
-    kubectl -n home-state rollout status "deployment/dash-$name" --timeout=180s
-done
+image=localhost:5000/home_state-dash-fastapi-sse
+docker build -t "$image:latest" dashboards/fastapi-sse
+docker push "$image:latest"
+kubectl -n home-state rollout restart deployment/dash-fastapi-sse
+kubectl -n home-state rollout status deployment/dash-fastapi-sse --timeout=180s
