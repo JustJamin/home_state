@@ -8,6 +8,7 @@
 const CACHE = "hs-catalogue";
 const FILES = ["firmware.bin", "default.config.json", "methods.json"];
 const url = (app, version, file) => `api/apps/${encodeURIComponent(app)}/${encodeURIComponent(version)}/${file}`;
+const LIST_TIMEOUT_MS = 5000; // with the VPN half-up a fetch can hang rather than fail: give up and use the last copy
 
 export class Catalogue {
   constructor(store, { fetchFn = (...a) => fetch(...a), caches: cacheStorage = globalThis.caches } = {}) {
@@ -16,10 +17,15 @@ export class Catalogue {
     this.caches = cacheStorage;
   }
 
-  /** [{app, versions: [...]}]: from the server when reachable, else the last copy. */
-  async apps() {
+  /** [{app, versions: [...]}]: from the server when reachable, else the last copy.
+   *  cached: use the last copy if there is one, without asking the server (fast start-up). */
+  async apps({ cached = false } = {}) {
+    if (cached) {
+      const last = await this.store.getMeta("apps");
+      if (last) return last;
+    }
     try {
-      const r = await this.fetch("api/apps");
+      const r = await this.fetch("api/apps", { signal: AbortSignal.timeout(LIST_TIMEOUT_MS) });
       if (!r.ok) throw new Error(`HTTP ${r.status}`);
       const apps = await r.json();
       await this.store.setMeta("apps", apps);

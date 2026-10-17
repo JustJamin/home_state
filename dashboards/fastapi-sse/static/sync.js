@@ -6,6 +6,8 @@
 
 import { TABLES } from "./store.js";
 
+const TIMEOUT_MS = 15000; // with the VPN half-up a fetch can hang rather than fail: count that as offline
+
 export class Sync {
   constructor(store, { fetchFn = (...a) => fetch(...a), base = "" } = {}) {
     this.store = store;
@@ -32,6 +34,7 @@ export class Sync {
     }
     const r = await this.fetch(`${this.base}api/sync`, {
       method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+      signal: AbortSignal.timeout(TIMEOUT_MS),
     });
     if (!r.ok) throw new Error(`push failed: HTTP ${r.status}`);
     const res = await r.json();
@@ -50,7 +53,7 @@ export class Sync {
 
   async pull() {
     const since = (await this.store.getMeta("cursor")) ?? 0;
-    const r = await this.fetch(`${this.base}api/sync?since=${since}`);
+    const r = await this.fetch(`${this.base}api/sync?since=${since}`, { signal: AbortSignal.timeout(TIMEOUT_MS) });
     if (!r.ok) throw new Error(`pull failed: HTTP ${r.status}`);
     const res = await r.json();
     let added = 0;

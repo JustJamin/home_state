@@ -12,6 +12,7 @@ import { deploy } from "./static/deploy.js";
 import * as B from "./static/builder.js";
 import { buildFleetView, derivedBleAddress, seenState } from "./static/fleetview.js";
 import * as GW from "./static/gateway.js";
+import { Catalogue } from "./static/catalogue.js";
 import { aligned, byBoard, colours, trim } from "./static/dashview.js";
 
 const methods = JSON.parse(readFileSync(new URL("../../firmware/apps/hs_advertiser/methods.json", import.meta.url)));
@@ -418,6 +419,25 @@ function fakeServer() {
   trim(s, 0.1, Date.parse("2026-10-05T10:00:10Z") / 1000);
   assert.deepEqual([s["hs-01"].temp, s["hs-02"].temp], [[30.5], [31]]);
   ok("dashview.js: per-board aligned series, stable colours, range trim");
+}
+
+{
+  const store = new MemoryStore();
+  let calls = 0;
+  const live = [{ app: "single-blink", versions: [] }];
+  const up = new Catalogue(store, { fetchFn: async () => { calls++; return new Response(JSON.stringify(live)); }, caches: null });
+  assert.deepEqual(await up.apps({ cached: true }), live, "no copy yet: asks the server");
+  assert.equal(calls, 1);
+  assert.deepEqual(await up.apps({ cached: true }), live, "start-up uses the phone's copy");
+  assert.equal(calls, 1, "...without waiting on the server");
+  // VPN half-up: the fetch never answers, only the abort signal ends it
+  const hang = (url, init) => new Promise((_, reject) => init.signal.addEventListener("abort", () => reject(init.signal.reason)));
+  const t0 = Date.now();
+  const keepAlive = setTimeout(() => {}, 10000); // AbortSignal.timeout's timer doesn't hold node open
+  assert.deepEqual(await new Catalogue(store, { fetchFn: hang, caches: null }).apps(), live, "hung fetch: last copy");
+  clearTimeout(keepAlive);
+  assert.ok(Date.now() - t0 < 7000, "gives up after the timeout");
+  ok("catalogue.js: start-up from the phone's copy; a hung list fetch times out to the last copy");
 }
 
 console.log(`\n${passed} test groups passed`);

@@ -19,6 +19,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from fastapi import FastAPI, Header, Query, Request
+from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import FileResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
@@ -113,6 +114,10 @@ async def lifespan(_: FastAPI):
 
 
 app = FastAPI(title="home_state · FastAPI + SSE", lifespan=lifespan)
+# history JSON is large (24 h of readings is ~3 MB) and compresses ~10x; Starlette never gzips the SSE stream
+app.add_middleware(GZipMiddleware, minimum_size=1024)
+
+
 class RevalidatedStatic(StaticFiles):
     """Static files the browser must revalidate on every use (cheap: unchanged files get 304).
     Without this, Chrome's heuristic HTTP cache can keep serving an old module next to new ones
