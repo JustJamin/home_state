@@ -125,8 +125,9 @@ setInterval(syncNow, 60000);
 
 // ============================== Build ==============================
 
+let startingUp = true; // start-up renders from the phone's copy; the first sync refreshes from the server
 async function renderApps() {
-  ui.apps = await catalogue.apps();
+  ui.apps = await catalogue.apps({ cached: startingUp });
   const sel = $("app");
   const prev = sel.value;
   sel.replaceChildren(...ui.apps.map(a => h("option", { value: a.app }, a.app)));
@@ -1068,5 +1069,7 @@ await renderGateway();
 tabFromHash();
 refreshHealth();
 window.__appReady = true; // the start-up guard in provision.html stands down
+startingUp = false;
+document.getElementById("fatal")?.style.setProperty("display", "none"); // clear a "still starting" hint
 renderAlerts();
 syncNow();
