@@ -22,7 +22,7 @@ XIAO ESP32-C6 boards ──BLE advertising──▶ lenovo (hci0) ──▶ scan
 ### Constraints
 - **The receiver only supports Bluetooth 4.0.** The C6 supports BLE 5, but the boards must use **legacy advertising** (31-byte adverts, 1M PHY). Extended or Coded-PHY adverts won't be seen.
 - **Docker-published ports bypass ufw on lenovo.** Never publish Postgres to the network; bind it to `127.0.0.1` if the host needs access.
-- **lenovo is only reachable over Tailscale.** Host setup (Docker and k3s installs, firewall rules) lives in the `sysadmin` repo, not here.
+- **lenovo is only reachable over Tailscale.** Host setup (Docker and k3s installs, firewall rules) lives in the `sysadmin` repo, and k3s config plus the `home-state` namespace live in `~/repo/cluster`, not here.
 
 ### Host dependencies (sysadmin repo)
 This project is blocked on these host items. They're tracked under `## home_state dependencies` in `~/repo/sysadmin/TODO.md`, so track them there, not here:

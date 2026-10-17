@@ -21,11 +21,11 @@ docker compose exec db psql -U home_state -c \
 ## k3s
 
 Needs k3s and the local registry on `127.0.0.1:5000` (both tracked in `~/repo/sysadmin/TODO.md`). Set `KUBECONFIG=~/.kube/config`.
-Host-side k3s settings (`config.yaml`, graceful node shutdown, start-after-Docker) are in [`k3s/`](k3s/README.md). Apply them with `sudo sh deploy/k3s/apply.sh`.
+Host-side k3s settings (`config.yaml`, graceful node shutdown, start-after-Docker), the `home-state` namespace and its quota live in `~/repo/cluster`. home_state uses NodePorts 30300–30309 and the `localhost:5000/home_state-*` images (see that repo's README).
 
 ```sh
-# one-time: namespace + DB password (the Secret is never committed)
-kubectl apply -f deploy/k8s/namespace.yaml
+# one-time: namespace (from ~/repo/cluster) + DB password (the Secret is never committed)
+kubectl apply -k ~/repo/cluster/namespaces
 kubectl -n home-state create secret generic postgres --from-literal=password="$(openssl rand -hex 24)"
 
 kubectl apply -k deploy                 # Postgres StatefulSet, scanner Deployment, NetworkPolicies
