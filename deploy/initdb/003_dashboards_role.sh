@@ -1,5 +1,5 @@
 #!/bin/sh
-# Read-only login for the demo dashboards in dashboards/. Runs once, on a fresh data volume.
+# Read-only login for the dashboard in dashboards/fastapi-sse. Runs once, on a fresh data volume.
 # The entrypoint may source this file, so it uses an if-block, never `exit`.
 if [ -n "${DASHBOARDS_DB_PASSWORD:-}" ]; then
     psql -v ON_ERROR_STOP=1 -v pw="$DASHBOARDS_DB_PASSWORD" \
